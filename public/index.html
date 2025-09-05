@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CFB Rankings — Two Step</title>
+  <style>
+    :root { --bg:#0b1020; --card:#11162a; --muted:#9aa4c3; --accent:#65b7ff; --accent2:#9bffcb; --border:#243055; --text:#e6ebff; --chip:#1c2442; --table-head:#0f193f; --overlay: rgba(4,6,12,0.6); }
+    [data-theme="light"] { --bg:#f7f9ff; --card:#ffffff; --muted:#55607a; --accent:#2b6cb0; --accent2:#0f9d58; --border:#d9e0f3; --text:#0f172a; --chip:#eef2ff; --table-head:#eef2ff; --overlay: rgba(0,0,0,0.25); }
+    * { box-sizing: border-box; }
+    body { background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, Arial; margin: 0; }
+    header { padding: 16px 24px; border-bottom: 1px solid var(--border); background: linear-gradient(180deg,#0f1732,#0b1020); display:flex; align-items:center; justify-content:space-between; gap:16px; }
+    [data-theme="light"] header { background: linear-gradient(180deg,#ffffff,#f7f9ff); }
+    h1 { margin: 0; font-size: 18px; letter-spacing: .2px; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    main { padding: 16px 24px; width:100%; max-width:none; margin:0; }
+    .tabs { display:flex; gap:8px; margin-bottom:10px; }
+    .tab { padding:8px 12px; border:1px solid var(--border); border-bottom:none; border-radius:10px 10px 0 0; background: var(--card); cursor:pointer; color:var(--muted); }
+    .tab.active { color:var(--text); background:#162044; }
+    [data-theme="light"] .tab.active { background:#fff; }
+    .panel { border:1px solid var(--border); border-radius:0 10px 10px 10px; background: var(--card); padding: 14px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:10px; }
+    label { font-size:12px; color:var(--muted); display:block; margin-bottom:4px; }
+    .input, select, input[type="number"], input[type="text"] { background:#0d1430; color:var(--text); border:1px solid var(--border); border-radius:10px; padding:8px; width:100%; }
+    [data-theme="light"] .input, [data-theme="light"] select, [data-theme="light"] input[type="number"] { background:#fff; }
+    .btn { padding:10px 14px; border-radius:12px; border:1px solid var(--border); cursor:pointer; background:#0f1735; color:var(--text); }
+    .btn.primary { background: linear-gradient(180deg, #1d3ea0, #0f2a7a); border-color:#2a3f86; }
+    .btn.warn { background: linear-gradient(180deg, #7a1a1a, #5b1111); border-color:#7a1a1a; }
+    .btn.ghost { background: transparent; }
+    .muted { color: var(--muted); font-size:12px; }
+    .section { margin-bottom: 16px; }
+    .badge { display:inline-block; padding:3px 8px; border-radius: 999px; font-size: 11px; margin-right:6px; border:1px solid var(--border); }
+    .badge.on { background:#1a2b66; }
+    [data-theme="light"] .badge.on { background:#e6efff; }
+    table { width:100%; border-collapse: collapse; }
+    thead th { position: sticky; top:0; background: var(--table-head); color: var(--muted); font-weight: 600; text-align:left; font-size:12px; border-bottom:1px solid var(--border); padding:8px; }
+    tbody td { border-bottom:1px solid var(--border); padding:8px; font-size:14px; }
+    td.right, th.right { text-align:right; }
+    .conf { padding:2px 6px; border-radius:6px; background: var(--chip); font-size:11px; }
+    .teamcell img { height:18px; vertical-align:middle; margin-right:6px; border-radius:3px; }
+    .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .spacer { flex:1 1 auto; }
+    .divider { height:1px; background:var(--border); margin:8px 0; }
+    .card { border:1px solid var(--border); background: var(--card); border-radius:10px; padding: 10px; }
+    .chips { display:flex; gap:6px; flex-wrap:wrap; }
+    /* Drawer */
+    .drawer { position: fixed; right: 0; top: 0; height: 100vh; width: 420px; max-width: 100vw; background: var(--card); border-left: 1px solid var(--border); transform: translateX(100%); transition: transform .25s ease; z-index: 30; display:flex; flex-direction:column; }
+    .drawer.open { transform: translateX(0); }
+    .drawer header { position: sticky; top:0; }
+    .overlay { position:fixed; inset:0; background: var(--overlay); opacity:0; pointer-events:none; transition:opacity .2s; z-index: 25; }
+    .overlay.show { opacity:1; pointer-events:auto; }
+    .bar { height: 10px; border-radius:6px; background: #0d1430; overflow:hidden; }
+    .bar > div { height:100%; display:flex; }
+    .bar .seg { flex: 0 0 auto; }
+    .seg.elo { background:#4aa3ff; }
+    .seg.play { background:#9bffcb; }
+    .seg.prior { background:#ffe082; }
+    .seg.ppa { background:#b388ff; }
+    .seg.market { background:#ffb3b3; }
+    .seg.returning { background:#80cbc4; }
+    .seg.ext { background:#ffd6a5; }
+    .seg.sos { background:#64b5f6; opacity: .8; }
+    .tiny { font-size: 12px; color: var(--muted); }
+    /* Compare */
+    .compare-grid { display:grid; grid-template-columns: repeat(2,1fr); gap:12px; }
+    .list { max-height: 280px; overflow:auto; border:1px solid var(--border); border-radius:8px; }
+    .list table { width:100%; }
+    .list th, .list td { padding:6px 8px; font-size:13px; }
+    /* Modal */
+    dialog { border:none; border-radius:12px; padding:0; }
+    dialog::backdrop { background: var(--overlay); }
+    .modal-card { padding:16px; width: 360px; background: var(--card); border:1px solid var(--border); border-radius:12px; }
+    .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip: rect(0 0 0 0); white-space:nowrap; }
+
+  .nowrap { white-space: nowrap; }
+  .teamcell { white-space: nowrap; }
+  .conf { white-space: nowrap; }
+  .list { overflow-x:auto; }
+
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🏈 College Foosball CompuRankings</h1>
+    <div class="row">
+      <label for="themeToggle" class="muted">Theme</label>
+      <select id="themeToggle" class="input" style="width:auto">
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+      </select>
+    </div>
+  </header>
+
+  <main>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="ingest" role="tab" aria-selected="true">Step 1: Pull Data</button>
+      <button class="tab" data-tab="rank" role="tab">Step 2: Rankings</button>
+      <button class="tab" data-tab="compare" role="tab">Compare</button>
+    </div>
+
+    <!-- INGEST -->
+    <section id="panel-ingest" class="panel" role="tabpanel">
+      <div class="grid">
+        <div>
+          <label>Season Year</label>
+          <select id="yearIngest" class="input"></select>
+        </div>
+        <div>
+          <label>End Week (optional)</label>
+          <select id="endWeek" class="input"><option value="">All weeks</option></select>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="ingestBtn" class="btn primary">Pull Data</button>
+        <div class="spacer"></div>
+        <span class="muted" id="ingestMeta">Cached: Teams 0, Games 0, Adv 0 — Last fetched: —</span>
+      </div>
+      <div class="divider"></div>
+      <div class="grid">
+        <div class="card">
+          <div class="row">
+            <button id="refreshCache" class="btn">Refresh cache info</button>
+            <button id="clearYear" class="btn warn">Clear this year</button>
+            <button id="clearAll" class="btn warn">Clear all</button>
+          </div>
+          <p class="tiny" style="margin-top:8px">Buttons are visible only when cache exists.</p>
+        </div>
+        <div class="card">
+          <label>Preview cached data</label>
+          <div class="row">
+            <select id="previewKind" class="input" style="width:auto">
+              <option value="teams">Teams</option>
+              <option value="games">Games</option>
+              <option value="advanced">Advanced</option>
+              <option value="ppa">PPA (teams)</option>
+              <option value="lines">Lines</option>
+              <option value="sp">SP+</option>
+              <option value="talent">Talent</option>
+              <option value="returning">Returning</option>
+              <option value="elo">Ext Elo</option>
+              <option value="srs">Ext SRS</option>
+              <option value="calendar">Calendar</option>
+            </select>
+            <input id="previewWeek" type="number" class="input" min="1" max="20" style="width:120px" placeholder="Week (opt)" />
+            <button id="previewBtn" class="btn">Preview</button>
+          </div>
+          <pre id="previewOut" class="card" style="max-height:280px; overflow:auto; margin-top:8px"></pre>
+        </div>
+      </div>
+
+      <!-- Confirm dialogs -->
+      <dialog id="confirmDlg">
+        <div class="modal-card">
+          <h3 style="margin:0 0 6px">Confirm</h3>
+          <p id="confirmText" class="muted" style="margin:6px 0 12px"></p>
+          <div class="row" style="justify-content:flex-end">
+            <button id="confirmCancel" class="btn">Cancel</button>
+            <button id="confirmOk" class="btn warn">Proceed</button>
+          </div>
+        </div>
+      </dialog>
+
+      <div class="section">
+        <h3 style="margin:10px 0 6px">Cached files</h3>
+        <div class="list">
+          <table>
+            <thead><tr><th>Name</th><th class="right">Size</th><th class="right">Modified</th></tr></thead>
+            <tbody id="cacheFiles"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- RANK -->
+    <section id="panel-rank" class="panel" role="tabpanel" hidden>
+      <div class="grid">
+        <div>
+          <label>Season (only years with cache)</label>
+          <select id="yearRank" class="input"></select>
+        </div>
+        <div>
+          <label>Through Week (only cached weeks)</label>
+          <select id="weekRank" class="input"></select>
+        </div>
+        <div>
+          <label>Profile</label>
+          <select id="profile" class="input">
+            <option value="balanced">Balanced</option>
+            <option value="predictive">Predictive</option>
+            <option value="resume">Résumé</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="grid" id="weightsGrid">
+        <div>
+          <label title="Weight of Elo rating in overall score.">Elo weight</label>
+          <input id="wElo" type="range" min="0" max="1" step="0.01" />
+          <div class="tiny" id="wEloV">0.50</div>
+        </div>
+        <div>
+          <label title="Weight of play-by-play efficiency (opponent-adjusted).">Play Quality weight</label>
+          <input id="wPlay" type="range" min="0" max="1" step="0.01" />
+          <div class="tiny" id="wPlayV">0.25</div>
+        </div>
+        <div>
+          <label title="Preseason priors from SP+ and roster talent composites.">Prior weight (SP+ & Talent)</label>
+          <input id="wPrior" type="range" min="0" max="1" step="0.01" />
+          <div class="tiny" id="wPriorV">0.10</div>
+        </div>
+        <div>
+          <label title="Multiplier applied to strength-of-schedule adjustment.">SoS multiplier</label>
+          <input id="sosWeight" type="range" min="-0.5" max="0.5" step="0.01" />
+          <div class="tiny" id="sosWeightV">0.15</div>
+        </div>
+        <div>
+          <label title="Weight for adjusted Predicted Points Added by team.">PPA (adj) weight</label>
+          <input id="wPPA" type="range" min="0" max="1" step="0.01" />
+          <div class="tiny" id="wPPAV">0.10</div>
+        </div>
+        <div>
+          <label title="Weight given to betting market power ratings.">Market weight</label>
+          <input id="wMarket" type="range" min="0" max="1" step="0.01" />
+          <div class="tiny" id="wMarketV">0.03</div>
+        </div>
+        <div>
+          <label title="Weight for returning production/experience.">Returning weight</label>
+          <input id="wReturn" type="range" min="0" max="1" step="0.01" />
+          <div class="tiny" id="wReturnV">0.02</div>
+        </div>
+        <div>
+          <label title="Weight for external composite ratings (e.g., SRS, external Elo).">External weight</label>
+          <input id="wExt" type="range" min="0" max="1" step="0.01" />
+          <div class="tiny" id="wExtV">0.00</div>
+        </div>
+        <div>
+          <label title="Elo K-factor (volatility). Higher = more reactive.">Elo K</label>
+          <input id="k" type="range" min="5" max="60" step="1" value="20" />
+          <div class="tiny" id="kV">20</div>
+        </div>
+        <div>
+          <label title="Home-field advantage in Elo rating points.">Home-field (Elo HFA)</label>
+          <input id="hfa" type="range" min="0" max="100" step="1" value="65" />
+          <div class="tiny" id="hfaV">65</div>
+        </div>
+        <div>
+          <label title="Down-weights FCS games for results/schedule.">FCS game weight</label>
+          <input id="fcsWeight" type="range" min="0" max="1" step="0.05" value="0.6" />
+          <div class="tiny" id="fcsWeightV">0.60</div>
+        </div>
+      </div>
+
+      <div class="toolbar" style="margin-top:8px">
+        <button id="rankBtn" class="btn primary">Rank from Cache</button>
+        <button id="deltaBtn" class="btn">Δ Week</button>
+        <button id="resetDefaults" class="btn">Reset default</button>
+        <button id="savePreset" class="btn">Save preset</button>
+        <button id="loadPreset" class="btn">Load preset</button>
+        <div class="spacer"></div>
+        <div id="dataBadges" class="chips"></div>
+        <button id="exportCsv" class="btn ghost">Export CSV</button>
+      </div>
+
+      <div class="section">
+        <div class="list" style="max-height: 60vh; overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Team</th>
+                <th>Conf</th>
+                <th class="right">W</th>
+                <th class="right">L</th>
+                <th class="right">PF</th>
+                <th class="right">PA</th>
+                <th class="right">Diff</th>
+                <th class="right">Win%</th>
+                <th class="right">AvgM</th>
+                <th class="right">Elo</th>
+                <th class="right">Play</th>
+                <th class="right">Prior</th>
+                <th class="right">Score</th>
+                <th class="right">ΔRank</th>
+                <th class="right">ΔScore</th>
+                <th class="right">PPA</th>
+                <th class="right">Market</th>
+                <th class="right">Returning</th>
+                <th class="right">SoS Avg Elo</th>
+                <th class="right">QW25</th>
+                <th class="right">QW50</th>
+                <th class="right">BadL</th>
+                <th class="right">T25</th>
+                <th class="right">T50</th>
+                <th class="right">One-score</th>
+              </tr>
+            </thead>
+            <tbody id="rankTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- COMPARE -->
+    <section id="panel-compare" class="panel" role="tabpanel" hidden>
+      <div class="grid">
+        <div>
+          <label>Team A</label>
+          <select id="compareA" class="input"></select>
+        </div>
+        <div>
+          <label>Team B</label>
+          <select id="compareB" class="input"></select>
+        </div>
+        <div style="align-self:end">
+          <button id="compareBtn" class="btn primary">Compare</button>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="compare-grid">
+        <div class="card">
+          <h3 style="margin:0 0 6px">Radar — Key Factors</h3>
+          <canvas id="radarCanvas" width="480" height="360" aria-label="Radar chart"></canvas>
+          <p class="tiny">Factors: Elo, Play, Prior, PPA(adj), Market, Returning, SoS.</p>
+        </div>
+        <div class="card">
+          <h3 style="margin:0 0 6px">Head-to-Head & Common Opponents</h3>
+          <div class="list" style="margin-top:6px">
+            <table>
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Opponent</th>
+                  <th class="right" id="thTeamA">A</th>
+                  <th class="right" id="thTeamB">B</th>
+                </tr>
+              </thead>
+              <tbody id="commonOpp"></tbody>
+            </table>
+          </div>
+          <div class="divider"></div>
+          <div class="list">
+            <table>
+              <thead><tr><th>Date</th><th>Result</th></tr></thead>
+              <tbody id="h2h"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Explainability Drawer -->
+  <div id="drawerOverlay" class="overlay" aria-hidden="true"></div>
+  <aside id="explainDrawer" class="drawer" aria-labelledby="drawerTitle" aria-hidden="true">
+    <header style="padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between;">
+      <div>
+        <div id="drawerTitle" style="font-weight:700">Team Details</div>
+        <div id="drawerSubtitle" class="tiny">—</div>
+      </div>
+      <button id="drawerClose" class="btn">Close</button>
+    </header>
+    <div style="padding:12px 16px; display:grid; gap:10px;">
+      <div>
+        <label>Contributions (stacked)</label>
+        <div class="bar"><div id="stackBar" class="stack"></div></div>
+        <div class="tiny" id="stackLegend" style="margin-top:6px"></div>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <label>Z-scores</label>
+          <div id="zScores"></div>
+        </div>
+        <div class="card">
+          <label>Résumé</label>
+          <div id="resumeBox"></div>
+        </div>
+      </div>
+      <div class="card">
+        <label>Recent games</label>
+        <div class="list" style="max-height:240px; overflow:auto;">
+          <table>
+            <thead><tr><th>Week</th><th>Opponent</th><th>Loc</th><th class="right">Score</th></tr></thead>
+            <tbody id="recentGames"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </aside>
+  
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
