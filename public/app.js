@@ -45,6 +45,7 @@ const savePresetBtn = document.getElementById('savePreset');
 const loadPresetBtn = document.getElementById('loadPreset');
 const exportCsvBtn  = document.getElementById('exportCsv');
 const resetDefaultsBtn = document.getElementById('resetDefaults');
+const exportPdfBtn = document.getElementById('exportPdf');
 
 
 // ---- conference colors
@@ -267,6 +268,87 @@ exportCsvBtn.onclick = () => {
   a.click();
   a.remove();
 };
+
+exportPdfBtn.onclick = () => {
+  const rows = (lastRankings && (lastRankings.rankings || lastRankings)) || [];
+  if (!rows.length) { alert('Run a ranking first.'); return; }
+
+  // Header bits
+  const yr = (lastRankings && lastRankings.year) || new Date().getFullYear();
+  const wk = (lastRankings && lastRankings.throughWeek) || 'All Weeks';
+  const title = 'CompuRankings';
+  const headerText = `${title} — Season ${yr} • Week ${wk || 'All'}`;
+
+  // Build table data matching your on-screen columns:contentReference[oaicite:3]{index=3}
+  const head = [[
+    '#','Team','Conf','W','L','PF','PA','Diff','Win%','AvgM',
+    'Elo','Play','Prior','Score','ΔRank','ΔScore','PPA','Market','Returning',
+    'SoS Avg Elo','QW25','QW50','BadL','T25','T50','One-score'
+  ]];
+
+  const body = rows.map(r => {
+    const ex = r.extras || {};
+    const t25 = `${r.recTop25W||0}-${r.recTop25L||0}`;
+    const t50 = `${r.recTop50W||0}-${r.recTop50L||0}`;
+    const one = `${r.oneScoreW||0}-${r.oneScoreL||0}`;
+    return [
+      r.rank,
+      r.team,
+      r.conference || '',
+      r.wins ?? 0,
+      r.losses ?? 0,
+      r.pointsFor ?? 0,
+      r.pointsAgainst ?? 0,
+      r.pointDiff ?? 0,
+      (r.winPct==null? '—' : Number(r.winPct).toFixed(2)),
+      (r.avgMargin==null? '—' : Number(r.avgMargin).toFixed(1)),
+      (r.elo==null? '—' : Number(r.elo).toFixed(0)),
+      (r.playQuality==null? '—' : Number(r.playQuality).toFixed(2)),
+      (r.prior==null? '—' : Number(r.prior).toFixed(2)),
+      (r.score==null? '—' : Number(r.score).toFixed(2)),
+      r.deltaRank ?? '',
+      (r.deltaScore==null? '—' : Number(r.deltaScore).toFixed(2)),
+      (ex.ppa==null? '—' : Number(ex.ppa).toFixed(2)),
+      (ex.market==null? '—' : Number(ex.market).toFixed(2)),
+      (ex.returning==null? '—' : Number(ex.returning).toFixed(2)),
+      (r.sosAvgElo==null? '—' : Number(r.sosAvgElo).toFixed(0)),
+      r.qualityWins25 || 0,
+      r.qualityWins50 || 0,
+      r.badLosses || 0,
+      t25,
+      t50,
+      one,
+    ];
+  });
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+
+  // Title
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(16);
+  doc.text(headerText, 40, 40);
+
+  // Table
+  doc.autoTable({
+    startY: 60,
+    head,
+    body,
+    styles: { fontSize: 8, cellPadding: 4, overflow: 'linebreak' },
+    headStyles: { fillColor: [22, 32, 68] }, // subtle dark header
+    didDrawPage: (data) => {
+      // Footer with timestamp
+      const s = new Date().toLocaleString();
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Generated ${s}`, data.settings.margin.left, doc.internal.pageSize.height - 10);
+    },
+  });
+
+  const fname = `compu_rankings_${yr}_week-${wk || 'all'}.pdf`;
+  doc.save(fname);
+};
+
 
 // ---- reset defaults
 const DEFAULTS = {
