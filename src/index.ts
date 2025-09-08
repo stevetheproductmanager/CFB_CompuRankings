@@ -10,6 +10,7 @@ import {
   toArray
 } from './cfbd';
 import { updateElo } from './elo';
+import { computeDominanceMetrics } from './metrics';
 import type {
   TeamInfo, Game, AdvancedSeasonTeam, SPRating, TalentRow, RatingsExternal,
   PPATeam, ReturningProduction, BettingLine, RatingRow
@@ -61,7 +62,7 @@ async function ingest(year: number, endWeek?: number) {
   const rawTeams = toArray(await getFbsTeams(year));
   const teams: TeamInfo[] = rawTeams.map((t: any) => ({
     id: t.id, school: t.school, mascot: t.mascot ?? null, conference: t.conference ?? null,
-    classification: t.classification ?? (t.division ?? null), logos: t.logos ?? null, abbreviation: t.abbreviation ?? null,
+    classification: t.classification ?? null, logos: t.logos ?? null, abbreviation: t.abbreviation ?? null
   }));
   writeJSON(path.join(DATA_DIR, `teams-${year}.json`), teams);
 
@@ -100,25 +101,17 @@ async function ingest(year: number, endWeek?: number) {
   writeJSON(path.join(DATA_DIR, `sp-${year}.json`), sp);
 
   const talentRaw = toArray(await getTalent(year));
-  const talent: TalentRow[] = talentRaw.map((t: any) => ({
-    school: t.school ?? t.team ?? t.name, talent: typeof t.talent === 'number' ? t.talent : null, year
-  }));
+  const talent: TalentRow[] = talentRaw.map((r: any) => ({ school: r.school ?? r.team, talent: r.talent ?? null }));
   writeJSON(path.join(DATA_DIR, `talent-${year}.json`), talent);
 
   const retRaw = toArray(await getReturningProduction(year));
-  const ret = retRaw.map((r: any) => ({
-    season: r.season ?? year, team: r.team ?? r.school, conference: r.conference ?? null,
-    percent_ppa: r.percent_ppa ?? r.overall ?? null,
-    offense_percent_ppa: r.offense_percent_ppa ?? r.offense ?? null,
-    defense_percent_ppa: r.defense_percent_ppa ?? r.defense ?? null,
-  }));
+  const ret = retRaw.map((r: any) => ({ team: r.team ?? r.school, percent_ppa: r.percent_ppa ?? r.totalPPA ?? null }));
   writeJSON(path.join(DATA_DIR, `returning-${year}.json`), ret);
 
-  const linesRaw = toArray(await getBettingLines(year, endWeek));
+  const linesRaw = toArray(await getBettingLines(year));
   const lines = linesRaw.map((x: any) => ({
-    season: x.season ?? year, week: x.week ?? null, gameId: x.gameId ?? x.id ?? null,
-    homeTeam: x.homeTeam, awayTeam: x.awayTeam,
-    spread: x.spread ?? x.formattedSpread ?? x.homeSpread ?? null,
+    gameId: x.gameId ?? x.id ?? null,
+    spread: x.spread ?? x.formattedSpread ?? x.homeSpread ?? x.awaySpread ?? null,
     provider: x.provider ?? x.providerName ?? null,
     overUnder: x.overUnder ?? x.total ?? null
   }));
@@ -177,24 +170,87 @@ function runElo(teams: TeamInfo[], games: Game[], throughWeek?: number, k=20, hf
 }
 
 function computePlayQuality(teams: TeamInfo[], adv: AdvancedSeasonTeam[]) {
-  const advByTeam = new Map<string, AdvancedSeasonTeam>();
-  adv.forEach(a => advByTeam.set(a.team, a));
-  const offSR = teams.map(t => advByTeam.get(t.school)?.offense?.successRate ?? null);
-  const offPPA = teams.map(t => advByTeam.get(t.school)?.offense?.ppa ?? null);
-  const defSR = teams.map(t => advByTeam.get(t.school)?.defense?.successRate ?? null);
-  const defPPA = teams.map(t => advByTeam.get(t.school)?.defense?.ppa ?? null);
-  const zOffSR = zscores(offSR), zOffPPA = zscores(offPPA), zDefSR = zscores(defSR), zDefPPA = zscores(defPPA);
-  return teams.map((_t, i) => zOffSR[i] + zOffPPA[i] - zDefSR[i] - zDefPPA[i]);
+  const off = new Map<string, number>();
+  const def = new Map<string, number>();
+  teams.forEach(t => {
+    const row = adv.find(a => a.team === t.school);
+    off.set(t.school, row?.offense?.ppa ?? 0);
+    def.set(t.school, row?.defense?.ppa ?? 0);
+  });
+  const net = teams.map(t => (off.get(t.school) ?? 0) - (def.get(t.school) ?? 0));
+  return net;
 }
 
-function computePrior(teams: TeamInfo[], sp: SPRating[], talent: TalentRow[]) {
-  const spBy = new Map(sp.map(s => [s.team, s.rating ?? null]));
-  const talentBy = new Map(talent.map(t => [t.school, t.talent ?? null]));
-  const spVals = teams.map(t => spBy.get(t.school) ?? null);
-  const talentVals = teams.map(t => talentBy.get(t.school) ?? null);
-  const zSP = zscores(spVals);
-  const zTalent = zscores(talentVals);
-  return teams.map((_t, i) => (zSP[i] + zTalent[i]) / 2);
+// Hardened: basic record & scoring stats per team (FBS-safe)
+function computeBasicStats(teams: TeamInfo[], games: Game[], throughWeek?: number) {
+  type B = {
+    games: number;
+    wins: number;
+    losses: number;
+    pointsFor: number;
+    pointsAgainst: number;
+    pointDiff: number;
+    winPct: number;
+    avgMargin: number;
+  };
+  const out = new Map<string, B>();
+  const fbs = new Set(teams.map(t => t.school));
+  teams.forEach(t => out.set(t.school, { games:0, wins:0, losses:0, pointsFor:0, pointsAgainst:0, pointDiff:0, winPct:0, avgMargin:0 }));
+
+  const upto = games.filter(g => (throughWeek == null ? true : (g.week ?? 0) <= throughWeek));
+  for (const g of upto) {
+    if (g.homePoints == null || g.awayPoints == null) continue;
+    const hp = g.homePoints as number;
+    const ap = g.awayPoints as number;
+    const margin = hp - ap;
+
+    const homeIsFBS = fbs.has(g.homeTeam);
+    const awayIsFBS = fbs.has(g.awayTeam);
+
+    if (homeIsFBS && awayIsFBS) {
+      const bh = out.get(g.homeTeam)!;
+      const ba = out.get(g.awayTeam)!;
+
+      bh.games++; ba.games++;
+      bh.pointsFor += hp;  bh.pointsAgainst += ap;
+      ba.pointsFor += ap;  ba.pointsAgainst += hp;
+      bh.pointDiff += (hp - ap);
+      ba.pointDiff += (ap - hp);
+
+      if (hp > ap) { bh.wins++; ba.losses++; }
+      else if (ap > hp) { ba.wins++; bh.losses++; }
+      // ties ignored
+      continue;
+    }
+
+    if (homeIsFBS && !awayIsFBS) {
+      const bh = out.get(g.homeTeam)!;
+      bh.games++;
+      bh.pointsFor += hp;  bh.pointsAgainst += ap;
+      bh.pointDiff += (hp - ap);
+      if (margin > 0) bh.wins++; else if (margin < 0) bh.losses++;
+      continue;
+    }
+
+    if (!homeIsFBS && awayIsFBS) {
+      const ba = out.get(g.awayTeam)!;
+      ba.games++;
+      ba.pointsFor += ap;  ba.pointsAgainst += hp;
+      ba.pointDiff += (ap - hp);
+      if (margin < 0) ba.wins++; else if (margin > 0) ba.losses++;
+      continue;
+    }
+
+    // both FCS -> ignore entirely
+  }
+
+  out.forEach((b) => {
+    const g = Math.max(1, b.games);
+    b.winPct = b.wins / g;
+    b.avgMargin = b.pointDiff / g;
+  });
+
+  return out;
 }
 
 // SoS (z-scored)
@@ -206,18 +262,20 @@ function computeSoS(teams: TeamInfo[], games: Game[], ratings: Map<string, numbe
     if (fbs.has(g.homeTeam) && fbs.has(g.awayTeam)) {
       const helo = ratings.get(g.awayTeam) ?? 1500;
       const aelo = ratings.get(g.homeTeam) ?? 1500;
-      (opps.get(g.homeTeam) ?? opps.set(g.homeTeam, []).get(g.homeTeam)!).push(helo);
-      (opps.get(g.awayTeam) ?? opps.set(g.awayTeam, []).get(g.awayTeam)!).push(aelo);
+      if (!opps.has(g.homeTeam)) opps.set(g.homeTeam, []);
+      if (!opps.has(g.awayTeam)) opps.set(g.awayTeam, []);
+      opps.get(g.homeTeam)!.push(helo);
+      opps.get(g.awayTeam)!.push(aelo);
     }
   }
-  const sosAvg = teams.map(t => {
+  const avg = teams.map(t => {
     const arr = opps.get(t.school) ?? [];
-    return arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 1500;
+    return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
   });
-  return zscores(sosAvg);
+  return zscores(avg);
 }
 
-// Raw avg opp Elo (for context column)
+// SoS Avg Elo (raw)
 function computeSoSAvgElo(teams: TeamInfo[], games: Game[], ratings: Map<string, number>, throughWeek?: number) {
   const fbs = new Set(teams.map(t => t.school));
   const opps = new Map<string, number[]>();
@@ -226,48 +284,32 @@ function computeSoSAvgElo(teams: TeamInfo[], games: Game[], ratings: Map<string,
     if (fbs.has(g.homeTeam) && fbs.has(g.awayTeam)) {
       const helo = ratings.get(g.awayTeam) ?? 1500;
       const aelo = ratings.get(g.homeTeam) ?? 1500;
-      (opps.get(g.homeTeam) ?? opps.set(g.homeTeam, []).get(g.homeTeam)!).push(helo);
-      (opps.get(g.awayTeam) ?? opps.set(g.awayTeam, []).get(g.awayTeam)!).push(aelo);
+      if (!opps.has(g.homeTeam)) opps.set(g.homeTeam, []);
+      if (!opps.has(g.awayTeam)) opps.set(g.awayTeam, []);
+      opps.get(g.homeTeam)!.push(helo);
+      opps.get(g.awayTeam)!.push(aelo);
     }
   }
-  const avg = new Map<string, number>();
-  for (const t of teams) {
+  const out = new Map<string, number>();
+  teams.forEach(t => {
     const arr = opps.get(t.school) ?? [];
-    avg.set(t.school, arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 1500);
-  }
-  return avg;
-}
-
-// Basic record & scoring
-function computeBasicStats(teams: TeamInfo[], games: Game[], throughWeek?: number) {
-  type S = { w: number; l: number; pf: number; pa: number; g: number; };
-  const stats = new Map<string, S>();
-  const upTo = games.filter(g => (throughWeek == null ? true : (g.week ?? 0) <= throughWeek));
-
-  function ensure(team: string) {
-    if (!stats.has(team)) stats.set(team, { w: 0, l: 0, pf: 0, pa: 0, g: 0 });
-    return stats.get(team)!;
-  }
-  for (const g of upTo) {
-    if (g.homePoints == null || g.awayPoints == null) continue;
-    const hs = ensure(g.homeTeam), as = ensure(g.awayTeam);
-    hs.pf += g.homePoints; hs.pa += g.awayPoints; hs.g += 1;
-    as.pf += g.awayPoints; as.pa += g.homePoints; as.g += 1;
-    if (g.homePoints > g.awayPoints) { hs.w += 1; as.l += 1; }
-    else if (g.homePoints < g.awayPoints) { as.w += 1; hs.l += 1; }
-    else { hs.w += 0.5; hs.l += 0.5; as.w += 0.5; as.l += 0.5; }
-  }
-  const out = new Map<string, { wins:number; losses:number; pointsFor:number; pointsAgainst:number; pointDiff:number; winPct:number; avgMargin:number; }>();
-  for (const t of teams) {
-    const s = stats.get(t.school) ?? { w: 0, l: 0, pf: 0, pa: 0, g: 0 };
-    const winPct = (s.w + s.l) > 0 ? s.w / (s.w + s.l) : 0;
-    const avgMargin = s.g > 0 ? (s.pf - s.pa) / s.g : 0;
-    out.set(t.school, { wins: s.w, losses: s.l, pointsFor: s.pf, pointsAgainst: s.pa, pointDiff: s.pf - s.pa, winPct, avgMargin });
-  }
+    out.set(t.school, arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0);
+  });
   return out;
 }
 
-// Opponent-adjusted PPA (two-pass)
+// Prior (SP + Talent)
+function computePrior(teams: TeamInfo[], sp: SPRating[], talent: TalentRow[]) {
+  const spBy = new Map(sp.map(s => [s.team, s.rating ?? null]));
+  const talentBy = new Map(talent.map(t => [t.school, t.talent ?? null]));
+  const spVals = teams.map(t => spBy.get(t.school) ?? null);
+  const talentVals = teams.map(t => talentBy.get(t.school) ?? null);
+  const zSP = zscores(spVals);
+  const zTalent = zscores(talentVals);
+  return teams.map((_t, i) => (zSP[i] + zTalent[i]) / 2);
+}
+
+// Opponent-adjusted net PPA (simple iterative smoothing)
 function computePPAAdjusted(teams: TeamInfo[], ppaTeams: PPATeam[], games: Game[], throughWeek?: number, passes=2) {
   const by = new Map(ppaTeams.map(r => [r.team, r]));
   const off = new Map<string, number>();
@@ -303,12 +345,6 @@ function computePPAAdjusted(teams: TeamInfo[], ppaTeams: PPATeam[], games: Game[
     const vals = teams.map(t => next.get(t.school) ?? 0);
     const m = vals.reduce((a,b)=>a+b,0)/Math.max(1, vals.length);
     teams.forEach(t => next.set(t.school, (next.get(t.school) ?? 0) - m));
-    // Use these adjusted values as curOff/curDef proxies for the next iteration
-    // (simple smoothing; we keep original off/def for context but iterate on net)
-    curOff = new Map(teams.map(t => [t.school, (curOff.get(t.school) ?? 0)]));
-    curDef = new Map(teams.map(t => [t.school, (curDef.get(t.school) ?? 0)]));
-    // store net adjusted in curOff-curDef space (not strictly needed, but keeps pass flow)
-    // we’ll just return final 'next'
     if (p === passes - 1) return teams.map(t => next.get(t.school) ?? 0);
   }
   return teams.map(t => (curOff.get(t.school) ?? 0) - (curDef.get(t.school) ?? 0));
@@ -337,69 +373,80 @@ function computeMarketFromLines(teams: TeamInfo[], games: Game[], lines: any[]) 
   });
 }
 
-// Résumé metrics
+// Résumé metrics (hardened to ignore FCS-only updates)
 function computeResumeMetrics(teams: TeamInfo[], games: Game[], ranks: Map<string, number>, throughWeek?: number) {
   const ONE_SCORE = 8;              // <= 8 pts
-  const BAD_LOSS_RANK = 80;         // configurable threshold
+  const BAD_LOSS_RANK = 80;
   const out = new Map<string, {
     qw25:number, qw50:number, badL:number,
     t25w:number, t25l:number, t50w:number, t50l:number,
     oneW:number, oneL:number
   }>();
-  teams.forEach(t => out.set(t.school, { qw25:0, qw50:0, badL:0, t25w:0, t25l:0, t50w:0, t50l:0, oneW:0, oneL:0 }));
+  const upTo = games.filter(g => (throughWeek == null ? true : (g.week ?? 0) <= throughWeek));
+  const fbs = new Set(teams.map(t => t.school));
+  for (const t of teams) out.set(t.school, { qw25:0, qw50:0, badL:0, t25w:0, t25l:0, t50w:0, t50l:0, oneW:0, oneL:0 });
 
-  const played = games.filter(g => (throughWeek == null ? true : (g.week ?? 0) <= throughWeek));
-  for (const g of played) {
-    const hr = ranks.get(g.homeTeam) ?? 999;
-    const ar = ranks.get(g.awayTeam) ?? 999;
-    const margin = (g.homePoints ?? 0) - (g.awayPoints ?? 0);
+  for (const g of upTo) {
+    if (g.homePoints == null || g.awayPoints == null) continue;
+    const hr = ranks.get(g.homeTeam) ?? 999, ar = ranks.get(g.awayTeam) ?? 999;
+    const margin = (g.homePoints as number) - (g.awayPoints as number);
     const oneScore = Math.abs(margin) <= ONE_SCORE;
 
-    // Winner/loser
-    let w = '', l = '';
-    if ((g.homePoints ?? 0) > (g.awayPoints ?? 0)) { w = g.homeTeam; l = g.awayTeam; }
-    else if ((g.awayPoints ?? 0) > (g.homePoints ?? 0)) { w = g.awayTeam; l = g.homeTeam; }
-    if (!w) continue;
+    const winner = margin > 0 ? g.homeTeam : (margin < 0 ? g.awayTeam : null);
+    const loser  = margin > 0 ? g.awayTeam : (margin < 0 ? g.homeTeam : null);
 
-    // Update one-score record
-    if (oneScore) { if (out.has(w)) if (out.has(w)) out.get(w)!.oneW += 1; if (out.has(l)) if (out.has(l)) out.get(l)!.oneL += 1; }
+    if (winner && fbs.has(winner)) {
+      const w = out.get(winner)!;
+      if ((winner === g.homeTeam && ar <= 25) || (winner === g.awayTeam && hr <= 25)) w.qw25++;
+      if ((winner === g.homeTeam && ar <= 50) || (winner === g.awayTeam && hr <= 50)) w.qw50++;
+      if (oneScore) w.oneW++;
+    }
 
-    // Quality wins/losses
-    const wr = ranks.get(w) ?? 999, lr = ranks.get(l) ?? 999;
-    const oppRankForW = (w === g.homeTeam) ? ar : hr;
-    const oppRankForL = (l === g.homeTeam) ? ar : hr;
-
-    if (oppRankForW <= 25) { if (out.has(w)) { if (out.has(w)) out.get(w)!.qw25 += 1; if (out.has(w)) out.get(w)!.t25w += 1; } }
-    else if (oppRankForW <= 50) { if (out.has(w)) { if (out.has(w)) out.get(w)!.qw50 += 1; if (out.has(w)) out.get(w)!.t50w += 1; } }
-
-    if (oppRankForL <= 25) { if (out.has(l)) { if (out.has(l)) out.get(l)!.t25l += 1; } }
-    if (oppRankForL <= 50) { if (out.has(l)) { if (out.has(l)) out.get(l)!.t50l += 1; } }
-    if (oppRankForL > BAD_LOSS_RANK) { if (out.has(l)) { if (out.has(l)) out.get(l)!.badL += 1; } }
+    if (loser && fbs.has(loser)) {
+      const l = out.get(loser)!;
+      if ((loser === g.homeTeam && ar <= 25) || (loser === g.awayTeam && hr <= 25)) l.t25l++;
+      if ((loser === g.homeTeam && ar <= 50) || (loser === g.awayTeam && hr <= 50)) l.t50l++;
+      if ((loser === g.homeTeam && ar >  25) || (loser === g.awayTeam && hr >  25)) l.t25w++;
+      if ((loser === g.homeTeam && ar >  50) || (loser === g.awayTeam && hr >  50)) l.t50w++;
+      if (oneScore) l.oneL++;
+      if ((loser === g.homeTeam && ar > BAD_LOSS_RANK) || (loser === g.awayTeam && hr > BAD_LOSS_RANK)) l.badL++;
+    }
   }
   return out;
 }
 
-function pickLatestWeekFile(prefix: string, year: number): { path: string, week: number | null } {
-  const names = fs.readdirSync(DATA_DIR).filter(n => n.startsWith(`${prefix}-${year}-wk`) && n.endsWith('.json'));
-  if (names.length === 0) {
-    const p = path.join(DATA_DIR, `${prefix}-${year}.json`);
-    return { path: p, week: null };
-  }
-  const weeks = names.map(n => { const m = n.match(/-wk(\d+)\.json$/); return m ? Number(m[1]) : null; }).filter((v): v is number => v != null);
-  const wk = Math.max(...weeks);
-  return { path: path.join(DATA_DIR, `${prefix}-${year}-wk${wk}.json`), week: wk };
+// -------- RANK (STEP 2) --------
+function pickLatestWeekFile(prefix: string, year: number) {
+  const names = fs.readdirSync(DATA_DIR).filter(n => n.startsWith(`${prefix}-${year}`));
+  const weeks = names
+    .map(n => {
+      const m = n.match(/wk(\d+)/);
+      return m ? Number(m[1]) : null;
+    })
+    .filter((v): v is number => v != null);
+
+  // If no -wkN files exist, fall back to non-week file (prefix-year.json)
+  const wk = weeks.length ? Math.max(...weeks) : null;
+  const fallback = path.join(DATA_DIR, `${prefix}-${year}.json`);
+  const resolvedPath = wk != null
+    ? path.join(DATA_DIR, `${prefix}-${year}-wk${wk}.json`)
+    : fallback;
+
+  return { path: resolvedPath, week: wk };
 }
 
-// -------- RANK FROM CACHE (STEP 2) --------
+
 function rankFromCache(params: {
   year: number; throughWeek?: number;
   wElo?: number; wPlay?: number; wPrior?: number; sosWeight?: number; k?: number; hfa?: number; fcsWeight?: number;
   wPPA?: number; wMarket?: number; wReturn?: number; wExt?: number;
+  wMov?: number; wOff?: number; wDef?: number;
 }) {
   const {
     year, throughWeek,
     wElo=0.5, wPlay=0.25, wPrior=0.1, sosWeight=0.15, k=20, hfa=65, fcsWeight=0.6,
-    wPPA=0.1, wMarket=0.03, wReturn=0.02, wExt=0.0
+    wPPA=0.1, wMarket=0.03, wReturn=0.02, wExt=0.0,
+    wMov=0.08, wOff=0.07, wDef=0.07
   } = params;
 
   const teamsPath = path.join(DATA_DIR, `teams-${year}.json`);
@@ -450,11 +497,15 @@ function rankFromCache(params: {
   // Extras (now with opponent-adjusted PPA)
   const ppaAdjVals = computePPAAdjusted(teams, ppaTeams, games, throughWeek, 2);
   const zPPA = zscores(ppaAdjVals);
-  const marketVals = computeMarketFromLines(teams, games.filter(g => (throughWeek == null ? true : (g.week ?? 0) <= throughWeek)), lines);
+  const marketVals = computeMarketFromLines(
+    teams,
+    games.filter(g => (throughWeek == null ? true : (g.week ?? 0) <= throughWeek)),
+    lines
+  );
   const zMarket = zscores(marketVals);
   const retVals = teams.map(t => {
     const r = ret.find(x => x.team === t.school);
-    return (r && typeof r.percent_ppa === 'number') ? r.percent_ppa : null;
+    return r && typeof r.percent_ppa === 'number' ? r.percent_ppa : null;
   });
   const zReturn = zscores(retVals);
   const extBy = new Map<string, number>();
@@ -463,13 +514,34 @@ function rankFromCache(params: {
   const extVals = teams.map(t => extBy.get(t.school) ?? null);
   const zExt = zscores(extVals);
 
+  // --- Dominance metrics (MOV / OffDom / DefDom)
+  const ppaByTeam = new Map<string, { off: number; def: number }>();
+  for (const r of ppaTeams as any[]) {
+    const tname = (r as any).team || (r as any).school || (r as any).name;
+    const off = Number((r as any).off_overall ?? (r as any).offense?.overall ?? (r as any).off?.overall ?? 0) || 0;
+    const def = Number((r as any).def_overall ?? (r as any).defense?.overall ?? (r as any).def?.overall ?? 0) || 0;
+    if (tname) ppaByTeam.set(tname, { off, def });
+  }
+  const eloByTeam = new Map<string, number>(teams.map((t, i) => [t.school, eloArray[i] ?? 1500]));
+  const dom = computeDominanceMetrics({
+    games: games.filter(g => (throughWeek == null ? true : (g.week ?? 0) <= throughWeek)),
+    ppaByTeam,
+    eloByTeam,
+    fcsWeight
+  });
+
   const basic = computeBasicStats(teams, games, throughWeek);
   const sosAvgEloMap = computeSoSAvgElo(teams, games, eloMap, throughWeek);
 
   // Blend
-  const baseSum = (wElo + wPlay + wPrior) || 1; const a = wElo / baseSum, b = wPlay / baseSum, c = wPrior / baseSum;
-  const extrasSum = (wPPA + wMarket + wReturn + wExt) || 1; const p = wPPA / extrasSum, m = wMarket / extrasSum, r = wReturn / extrasSum, e = wExt / extrasSum;
-  const extrasWeight = (wPPA + wMarket + wReturn + wExt);
+  const baseSum = (wElo + wPlay + wPrior) || 1;
+  const a = wElo / baseSum, b = wPlay / baseSum, c = wPrior / baseSum;
+
+  const extrasSum = (wPPA + wMarket + wReturn + wExt + wMov + wOff + wDef) || 1;
+  const p = wPPA / extrasSum, m = wMarket / extrasSum, r = wReturn / extrasSum, e = wExt / extrasSum;
+  const mv = wMov / extrasSum, offw = wOff / extrasSum, defw = wDef / extrasSum;
+  const extrasWeight = (wPPA + wMarket + wReturn + wExt + wMov + wOff + wDef);
+
   const sosW = clamp(sosWeight, -0.5, 0.5);
 
   const rows: RatingRow[] = teams.map((t, i) => {
@@ -480,7 +552,11 @@ function rankFromCache(params: {
     const contrMkt = m * zMarket[i] * extrasWeight;
     const contrRet = r * zReturn[i] * extrasWeight;
     const contrExt = e * zExt[i] * extrasWeight;
-    const preSoS = contrE + contrP + contrR + contrPPA + contrMkt + contrRet + contrExt;
+    const contrMov = mv * (dom.zMov.get(t.school) ?? 0) * extrasWeight;
+    const contrOff = offw * (dom.zOff.get(t.school) ?? 0) * extrasWeight;
+    const contrDef = defw * (dom.zDef.get(t.school) ?? 0) * extrasWeight;
+
+    const preSoS = contrE + contrP + contrR + contrPPA + contrMkt + contrRet + contrExt + contrMov + contrOff + contrDef;
     const contrSoS = preSoS * sosW * zSoS[i];
     const score = preSoS + contrSoS;
 
@@ -502,10 +578,22 @@ function rankFromCache(params: {
       pointDiff: bstat?.pointDiff ?? 0, winPct: bstat?.winPct ?? 0, avgMargin: bstat?.avgMargin ?? 0,
       sosAvgElo,
 
-      contr: { elo: contrE, play: contrP, prior: contrR, ppa: contrPPA, market: contrMkt, returning: contrRet, ext: contrExt, sos: contrSoS, preSoS },
-      z: { elo: zElo[i], play: zPlay[i], prior: zPrior[i], ppa: zPPA[i], market: zMarket[i], returning: zReturn[i], ext: zExt[i], sos: zSoS[i] },
+      contr: {
+        elo: contrE, play: contrP, prior: contrR,
+        ppa: contrPPA, market: contrMkt, returning: contrRet, ext: contrExt,
+        mov: contrMov, off: contrOff, def: contrDef,
+        sos: contrSoS, preSoS
+      },
+      z: {
+        elo: zElo[i], play: zPlay[i], prior: zPrior[i], ppa: zPPA[i], market: zMarket[i],
+        returning: zReturn[i], ext: zExt[i], sos: zSoS[i],
+        mov: dom.zMov.get(t.school) ?? 0, off: dom.zOff.get(t.school) ?? 0, def: dom.zDef.get(t.school) ?? 0
+      },
 
-      extras: { ppa: ppaAdjVals[i], market: marketVals[i], returning: retVals[i], ext: extVals[i] }
+      extras: {
+        ppa: ppaAdjVals[i], market: marketVals[i], returning: retVals[i], ext: extVals[i],
+        mov: dom.movAdj.get(t.school) ?? null, offDom: dom.offDom.get(t.school) ?? null, defDom: dom.defDom.get(t.school) ?? null
+      }
     };
   });
 
@@ -519,21 +607,21 @@ function rankFromCache(params: {
   withRank.forEach(r => {
     const re = resume.get(r.team) || { qw25:0, qw50:0, badL:0, t25w:0, t25l:0, t50w:0, t50l:0, oneW:0, oneL:0 };
     r.qualityWins25 = re.qw25; r.qualityWins50 = re.qw50; r.badLosses = re.badL;
-    r.recTop25W = re.t25w; r.recTop25L = re.t25l;
-    r.recTop50W = re.t50w; r.recTop50L = re.t50l;
-    r.oneScoreW = re.oneW; r.oneScoreL = re.oneL;
+    r.top25Wins = re.t25w; r.top25Losses = re.t25l; r.top50Wins = re.t50w; r.top50Losses = re.t50l;
+    r.oneScoreWins = re.oneW; r.oneScoreLosses = re.oneL;
   });
 
   const meta = {
-    year, throughWeek: throughWeek ?? null,
+    year,
+    throughWeek: throughWeek ?? null,
     maxWeek: Math.max(0, ...games.map(g => g.week ?? 0)),
     teamsCount: teams.length,
-    gamesToDate: games.filter(g => (throughWeek == null ? true : (g.week ?? 0) <= throughWeek)).length,
     used: {
-      advanced: fs.existsSync(advPath),
-      ppa: fs.existsSync(ppaMeta.path),
-      lines: fs.existsSync(linesMeta.path),
+      sp: fs.existsSync(spPath),
+      talent: fs.existsSync(talentPath),
       returning: fs.existsSync(retPath),
+      ppaTeams: fs.existsSync(ppaMeta.path),
+      lines: fs.existsSync(linesMeta.path),
       eloExt: fs.existsSync(eloExtPath),
       srsExt: fs.existsSync(srsExtPath)
     }
@@ -541,25 +629,35 @@ function rankFromCache(params: {
   writeJSON(path.join(DATA_DIR, `rankings-${year}${throughWeek ? `-wk${throughWeek}` : ''}.json`), withRank);
   writeJSON(path.join(DATA_DIR, `meta-${year}${throughWeek ? `-wk${throughWeek}` : ''}.json`), meta);
   return { meta, teams, games, rankings: withRank };
-}
+} 
 
 function deltaRankings(params: {
-  year: number; week: number;
-  wElo:number; wPlay:number; wPrior:number; sosWeight:number; k:number; hfa:number; fcsWeight:number; wPPA:number; wMarket:number; wReturn:number; wExt:number;
+  year: number;
+  week: number;
+  wElo:number; wPlay:number; wPrior:number; sosWeight:number; k:number; hfa:number; fcsWeight:number;
+  wPPA:number; wMarket:number; wReturn:number; wExt:number; wMov:number; wOff:number; wDef:number;
 }) {
-  const { year, week, wElo, wPlay, wPrior, sosWeight, k, hfa, fcsWeight, wPPA, wMarket, wReturn, wExt } = params;
+  const { year, week, wElo, wPlay, wPrior, sosWeight, k, hfa, fcsWeight, wPPA, wMarket, wReturn, wExt, wMov, wOff, wDef } = params;
+
+  // new: validate week
+  if (!Number.isFinite(week)) throw new Error('Delta requires a valid week number');
   if (week <= 1) throw new Error('Delta requires week >= 2');
-  const cur = rankFromCache({ year, throughWeek: week, wElo, wPlay, wPrior, sosWeight, k, hfa, fcsWeight, wPPA, wMarket, wReturn, wExt });
-  const prev = rankFromCache({ year, throughWeek: week - 1, wElo, wPlay, wPrior, sosWeight, k, hfa, fcsWeight, wPPA, wMarket, wReturn, wExt });
+
+  const cur = rankFromCache({ year, throughWeek: week,     wElo, wPlay, wPrior, sosWeight, k, hfa, fcsWeight, wPPA, wMarket, wReturn, wExt, wMov, wOff, wDef });
+  const prev = rankFromCache({ year, throughWeek: week - 1, wElo, wPlay, wPrior, sosWeight, k, hfa, fcsWeight, wPPA, wMarket, wReturn, wExt, wMov, wOff, wDef });
+
   const prevPos = new Map<string, { rank:number, score:number }>();
   prev.rankings.forEach((r: any) => prevPos.set(r.team, { rank: r.rank, score: r.score }));
+
   const merged = cur.rankings.map((r: any) => {
     const p = prevPos.get(r.team);
     const deltaRank = p ? (p.rank - r.rank) : 0;
     const deltaScore = p ? (r.score - p.score) : null;
     return { ...r, deltaRank, deltaScore };
   });
-  return { meta: { ...cur.meta, week, deltaFrom: week - 1 }, rankings: merged, teams: cur.teams, games: cur.games };
+
+  // new: do NOT touch cur.games/cur.teams here; frontend doesn’t need them from this endpoint
+  return { meta: { ...cur.meta, week, deltaFrom: week - 1 }, rankings: merged };
 }
 
 // ---------------- API ----------------
@@ -591,29 +689,31 @@ app.delete('/api/clear-cache', (req, res) => {
     const names = fs.readdirSync(DATA_DIR);
     let count = 0;
     for (const name of names) { if (!yr || name.includes(String(yr))) { fs.unlinkSync(path.join(DATA_DIR, name)); count++; } }
-    res.json({ deleted: count, year: yr ?? null });
+    res.json({ deleted: count });
   } catch (e: any) { res.status(500).json({ error: e.message || 'Unknown' }); }
 });
 
-app.get('/api/cache-data', (req, res) => {
+app.get('/api/file', (req, res) => {
   try {
+    const kind = String(req.query.kind || '');
     const year = Number(req.query.year || DEFAULT_YEAR);
-    const kind = String(req.query.kind || 'teams');
-    const map: Record<string, string> = {
-      teams: `teams-${year}.json`,
-      games: `games-${year}.json`,
-      advanced: `advanced-${year}${req.query.week ? `-wk${Number(req.query.week)}` : ''}.json`,
-      sp: `sp-${year}.json`,
-      talent: `talent-${year}.json`,
-      ppa: `ppa-teams-${year}${req.query.week ? `-wk${Number(req.query.week)}` : ''}.json`,
-      lines: `lines-${year}${req.query.week ? `-wk${Number(req.query.week)}` : ''}.json`,
-      returning: `returning-${year}.json`,
-      elo: `elo-ext-${year}.json`,
-      srs: `srs-ext-${year}.json`,
-      calendar: `calendar-${year}.json`,
-    };
-    const file = path.join(DATA_DIR, map[kind]);
-    if (!fs.existsSync(file)) return res.status(404).json({ error: 'Not found' });
+    const week = req.query.week != null ? Number(req.query.week) : undefined;
+    let file: string;
+    if (kind === 'teams') file = path.join(DATA_DIR, `teams-${year}.json`);
+    else if (kind === 'games') file = path.join(DATA_DIR, `games-${year}.json`);
+    else if (kind === 'advanced') file = week != null ? path.join(DATA_DIR, `advanced-${year}-wk${week}.json`) : path.join(DATA_DIR, `advanced-${year}.json`);
+    else if (kind === 'ppa') file = week != null ? path.join(DATA_DIR, `ppa-teams-${year}-wk${week}.json`) : path.join(DATA_DIR, `ppa-teams-${year}.json`);
+    else if (kind === 'lines') file = week != null ? path.join(DATA_DIR, `lines-${year}-wk${week}.json`) : path.join(DATA_DIR, `lines-${year}.json`);
+    else if (kind === 'sp') file = path.join(DATA_DIR, `sp-${year}.json`);
+    else if (kind === 'talent') file = path.join(DATA_DIR, `talent-${year}.json`);
+    else if (kind === 'returning') file = path.join(DATA_DIR, `returning-${year}.json`);
+    else if (kind === 'elo-ext') file = path.join(DATA_DIR, `elo-ext-${year}.json`);
+    else if (kind === 'srs-ext') file = path.join(DATA_DIR, `srs-ext-${year}.json`);
+    else if (kind === 'calendar') file = path.join(DATA_DIR, `calendar-${year}.json`);
+    else if (kind === 'rankings') file = week != null ? path.join(DATA_DIR, `rankings-${year}-wk${week}.json`) : path.join(DATA_DIR, `rankings-${year}.json`);
+    else if (kind === 'meta') file = week != null ? path.join(DATA_DIR, `meta-${year}-wk${week}.json`) : path.join(DATA_DIR, `meta-${year}.json`);
+    else throw new Error('Unknown kind');
+    if (!fs.existsSync(file)) throw new Error(`No file ${path.basename(file)}`);
     const data = readJSON<any[]>(file);
     res.json({ kind, year, length: Array.isArray(data)? data.length : 0, data });
   } catch (e: any) { res.status(500).json({ error: e.message || 'Unknown' }); }
@@ -634,8 +734,11 @@ app.get('/api/rank-from-cache', (req, res) => {
     const wMarket = req.query.wMarket != null ? Number(req.query.wMarket) : 0.03;
     const wReturn = req.query.wReturn != null ? Number(req.query.wReturn) : 0.02;
     const wExt = req.query.wExt != null ? Number(req.query.wExt) : 0.0;
+    const wMov = req.query.wMov != null ? Number(req.query.wMov) : 0.08;
+    const wOff = req.query.wOff != null ? Number(req.query.wOff) : 0.07;
+    const wDef = req.query.wDef != null ? Number(req.query.wDef) : 0.07;
     const result = rankFromCache({
-      year, throughWeek, wElo, wPlay, wPrior, sosWeight, k, hfa, fcsWeight, wPPA, wMarket, wReturn, wExt
+      year, throughWeek, wElo, wPlay, wPrior, sosWeight, k, hfa, fcsWeight, wPPA, wMarket, wReturn, wExt, wMov, wOff, wDef
     });
     res.json(result);
   } catch (e: any) { res.status(500).json({ error: e.message || 'Unknown' }); }
@@ -656,8 +759,11 @@ app.get('/api/rank-delta', (req, res) => {
     const wMarket = req.query.wMarket != null ? Number(req.query.wMarket) : 0.03;
     const wReturn = req.query.wReturn != null ? Number(req.query.wReturn) : 0.02;
     const wExt = req.query.wExt != null ? Number(req.query.wExt) : 0.0;
+    const wMov = req.query.wMov != null ? Number(req.query.wMov) : 0.08;
+    const wOff = req.query.wOff != null ? Number(req.query.wOff) : 0.07;
+    const wDef = req.query.wDef != null ? Number(req.query.wDef) : 0.07;
     const result = deltaRankings({
-      year, week, wElo, wPlay, wPrior, sosWeight, k, hfa, fcsWeight, wPPA, wMarket, wReturn, wExt
+      year, week, wElo, wPlay, wPrior, sosWeight, k, hfa, fcsWeight, wPPA, wMarket, wReturn, wExt, wMov, wOff, wDef
     });
     res.json(result);
   } catch (e: any) { res.status(500).json({ error: e.message || 'Unknown' }); }

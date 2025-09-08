@@ -60,23 +60,23 @@
     .seg.returning { background:#80cbc4; }
     .seg.ext { background:#ffd6a5; }
     .seg.sos { background:#64b5f6; opacity: .8; }
+    .seg.mov { background:#90caf9; }
+    .seg.off { background:#a5d6a7; }
+    .seg.def { background:#ef9a9a; }
     .tiny { font-size: 12px; color: var(--muted); }
-    /* Compare */
     .compare-grid { display:grid; grid-template-columns: repeat(2,1fr); gap:12px; }
     .list { max-height: 280px; overflow:auto; border:1px solid var(--border); border-radius:8px; }
     .list table { width:100%; }
     .list th, .list td { padding:6px 8px; font-size:13px; }
-    /* Modal */
     dialog { border:none; border-radius:12px; padding:0; }
     dialog::backdrop { background: var(--overlay); }
     .modal-card { padding:16px; width: 360px; background: var(--card); border:1px solid var(--border); border-radius:12px; }
     .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip: rect(0 0 0 0); white-space:nowrap; }
-
-  .nowrap { white-space: nowrap; }
-  .teamcell { white-space: nowrap; }
-  .conf { white-space: nowrap; }
-  .list { overflow-x:auto; }
-
+    .nowrap { white-space: nowrap; }
+    .teamcell { white-space: nowrap; }
+    .conf { white-space: nowrap; }
+    .list { overflow-x:auto; }
+    #confDrawer { width: 640px; max-width: 95vw; }
   </style>
 </head>
 <body>
@@ -93,9 +93,10 @@
 
   <main>
     <div class="tabs" role="tablist">
-      <button class="tab active" data-tab="ingest" role="tab" aria-selected="true">Step 1: Pull Data</button>
-      <button class="tab" data-tab="rank" role="tab">Step 2: Rankings</button>
-      <button class="tab" data-tab="compare" role="tab">Compare</button>
+      <button class="tab active" data-tab="ingest" role="tab" aria-selected="true">Get Data</button>
+      <button class="tab" data-tab="rank" role="tab">Team Rankings</button>
+      <button class="tab" data-tab="compare" role="tab">Compare Teams</button>
+      <button class="tab" data-tab="conferences" role="tab">Conference Ranking</button>
     </div>
 
     <!-- INGEST -->
@@ -115,40 +116,47 @@
         <div class="spacer"></div>
         <span class="muted" id="ingestMeta">Cached: Teams 0, Games 0, Adv 0 — Last fetched: —</span>
       </div>
+
       <div class="divider"></div>
+
       <div class="grid">
-        <div class="card">
-          <div class="row">
-            <button id="refreshCache" class="btn">Refresh cache info</button>
-            <button id="clearYear" class="btn warn">Clear this year</button>
-            <button id="clearAll" class="btn warn">Clear all</button>
-          </div>
-          <p class="tiny" style="margin-top:8px">Buttons are visible only when cache exists.</p>
+        <div>
+          <label>Preview kind</label>
+          <select id="previewKind" class="input">
+            <option value="teams">teams</option>
+            <option value="games">games</option>
+            <option value="advanced">advanced</option>
+          </select>
         </div>
-        <div class="card">
-          <label>Preview cached data</label>
-          <div class="row">
-            <select id="previewKind" class="input" style="width:auto">
-              <option value="teams">Teams</option>
-              <option value="games">Games</option>
-              <option value="advanced">Advanced</option>
-              <option value="ppa">PPA (teams)</option>
-              <option value="lines">Lines</option>
-              <option value="sp">SP+</option>
-              <option value="talent">Talent</option>
-              <option value="returning">Returning</option>
-              <option value="elo">Ext Elo</option>
-              <option value="srs">Ext SRS</option>
-              <option value="calendar">Calendar</option>
-            </select>
-            <input id="previewWeek" type="number" class="input" min="1" max="20" style="width:120px" placeholder="Week (opt)" />
-            <button id="previewBtn" class="btn">Preview</button>
-          </div>
-          <pre id="previewOut" class="card" style="max-height:280px; overflow:auto; margin-top:8px"></pre>
+        <div>
+          <label>Preview week (optional)</label>
+          <select id="previewWeek" class="input"><option value="">All weeks</option></select>
+        </div>
+        <div style="align-self:end">
+          <button id="previewBtn" class="btn">Preview cache</button>
         </div>
       </div>
 
-      <!-- Confirm dialogs -->
+      <div class="section">
+        <pre id="previewOut" class="card" style="max-height:240px; overflow:auto; white-space:pre-wrap; margin:0"></pre>
+      </div>
+
+      <div class="section">
+        <div class="toolbar">
+          <button id="refreshCache" class="btn">Refresh cache list</button>
+          <button id="clearYear" class="btn warn">Clear this year</button>
+          <button id="clearAll" class="btn warn">Clear ALL</button>
+          <div class="spacer"></div>
+        </div>
+        <h3 style="margin:10px 0 6px">Cached files</h3>
+        <div class="list">
+          <table>
+            <thead><tr><th>Name</th><th class="right">Size</th><th class="right">Modified</th></tr></thead>
+            <tbody id="cacheFiles"></tbody>
+          </table>
+        </div>
+      </div>
+
       <dialog id="confirmDlg">
         <div class="modal-card">
           <h3 style="margin:0 0 6px">Confirm</h3>
@@ -159,16 +167,6 @@
           </div>
         </div>
       </dialog>
-
-      <div class="section">
-        <h3 style="margin:10px 0 6px">Cached files</h3>
-        <div class="list">
-          <table>
-            <thead><tr><th>Name</th><th class="right">Size</th><th class="right">Modified</th></tr></thead>
-            <tbody id="cacheFiles"></tbody>
-          </table>
-        </div>
-      </div>
     </section>
 
     <!-- RANK -->
@@ -234,6 +232,21 @@
           <label title="Weight for external composite ratings (e.g., SRS, external Elo).">External weight</label>
           <input id="wExt" type="range" min="0" max="1" step="0.01" />
           <div class="tiny" id="wExtV">0.00</div>
+        </div>
+        <div>
+          <label title="Weight for opponent-adjusted, log-capped margin-of-victory.">MOV weight</label>
+          <input id="wMov" type="range" min="0" max="1" step="0.01" />
+          <div class="tiny" id="wMovV">0.08</div>
+        </div>
+        <div>
+          <label title="Weight for opponent-adjusted offensive dominance.">Off dominance weight</label>
+          <input id="wOff" type="range" min="0" max="1" step="0.01" />
+          <div class="tiny" id="wOffV">0.07</div>
+        </div>
+        <div>
+          <label title="Weight for opponent-adjusted defensive dominance.">Def dominance weight</label>
+          <input id="wDef" type="range" min="0" max="1" step="0.01" />
+          <div class="tiny" id="wDefV">0.07</div>
         </div>
         <div>
           <label title="Elo K-factor (volatility). Higher = more reactive.">Elo K</label>
@@ -318,9 +331,7 @@
           <button id="compareBtn" class="btn primary">Compare</button>
         </div>
       </div>
-
       <div class="divider"></div>
-
       <div class="compare-grid">
         <div class="card">
           <h3 style="margin:0 0 6px">Radar — Key Factors</h3>
@@ -352,10 +363,50 @@
         </div>
       </div>
     </section>
+
+    <!-- CONFERENCES -->
+    <section id="panel-conferences" class="panel" role="tabpanel" hidden>
+      <div class="toolbar" style="margin-bottom:8px">
+        <div class="row">
+          <label for="confTopN" class="muted">Aggregate metric:</label>
+          <select id="confTopN" class="input" style="width:auto">
+            <option value="4">Avg of Top 4</option>
+            <option value="6">Avg of Top 6</option>
+            <option value="8">Avg of Top 8</option>
+            <option value="999" selected>Average of All Teams</option>
+          </select>
+        </div>
+        <div class="spacer"></div>
+        <button id="buildConfBtn" class="btn primary">Build Conference Rankings</button>
+        <button id="exportConfPdf" class="btn ghost">Export PDF</button>
+      </div>
+
+      <div class="list" style="max-height: 60vh; overflow:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Conference</th>
+              <th class="right">Teams</th>
+              <th class="right">Agg Score</th>
+              <th class="right">Median Score</th>
+              <th class="right">Avg Elo</th>
+              <th class="right">Top 25</th>
+              <th class="right">Top 50</th>
+            </tr>
+          </thead>
+          <tbody id="confTbody"></tbody>
+        </table>
+      </div>
+      <p class="tiny" style="margin-top:6px">
+        *Agg Score uses the average of the selected Top-N teams’ <em>current team Score</em>.
+      </p>
+    </section>
   </main>
 
   <!-- Explainability Drawer -->
   <div id="drawerOverlay" class="overlay" aria-hidden="true"></div>
+
   <aside id="explainDrawer" class="drawer" aria-labelledby="drawerTitle" aria-hidden="true">
     <header style="padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between;">
       <div>
@@ -391,9 +442,43 @@
       </div>
     </div>
   </aside>
+
+  <!-- Conference Drawer -->
+  <aside id="confDrawer" class="drawer" aria-labelledby="confDrawerTitle" aria-hidden="true">
+    <header style="padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between;">
+      <div>
+        <div id="confDrawerTitle" style="font-weight:700">Conference Details</div>
+        <div id="confDrawerSubtitle" class="tiny">—</div>
+      </div>
+      <button id="confDrawerClose" class="btn">Close</button>
+    </header>
+    <div style="padding:12px 16px; display:grid; gap:10px;">
+      <div class="list" style="max-height:85vh; overflow:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Team</th>
+              <th class="right">W</th>
+              <th class="right">L</th>
+              <th class="right">Score</th>
+              <th class="right">Elo</th>
+              <th class="right">Play</th>
+              <th class="right">Prior</th>
+            </tr>
+          </thead>
+          <tbody id="confTeamsTbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </aside>
+
+  <!-- libs -->
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <!-- app -->
   <script src="app.js"></script>
 </body>
 </html>
