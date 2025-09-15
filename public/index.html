@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -17,16 +17,16 @@
     .tabs { display:flex; gap:8px; margin-bottom:10px; }
     .tab { padding:8px 12px; border:1px solid var(--border); border-bottom:none; border-radius:10px 10px 0 0; background: var(--card); cursor:pointer; color:var(--muted); }
     .tab.active { color:var(--text); background:#162044; }
-    [data-theme="light"] .tab.active { background:#fff; }
+    [data-theme="light"] .tab.active { background:#1d3ea0; color: white }
     .panel { border:1px solid var(--border); border-radius:0 10px 10px 10px; background: var(--card); padding: 14px; }
     .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:10px; }
     label { font-size:12px; color:var(--muted); display:block; margin-bottom:4px; }
     .input, select, input[type="number"], input[type="text"] { background:#0d1430; color:var(--text); border:1px solid var(--border); border-radius:10px; padding:8px; width:100%; }
     [data-theme="light"] .input, [data-theme="light"] select, [data-theme="light"] input[type="number"] { background:#fff; }
-    .btn { padding:10px 14px; border-radius:12px; border:1px solid var(--border); cursor:pointer; background:#0f1735; color:var(--text); }
+    .btn { padding:10px 14px; border-radius:12px; border:1px solid var(--border); cursor:pointer; background:#383838; color:white }
     .btn.primary { background: linear-gradient(180deg, #1d3ea0, #0f2a7a); border-color:#2a3f86; }
     .btn.warn { background: linear-gradient(180deg, #7a1a1a, #5b1111); border-color:#7a1a1a; }
-    .btn.ghost { background: transparent; }
+    .btn.ghost { background: transparent; color:black }
     .muted { color: var(--muted); font-size:12px; }
     .section { margin-bottom: 16px; }
     .badge { display:inline-block; padding:3px 8px; border-radius: 999px; font-size: 11px; margin-right:6px; border:1px solid var(--border); }
@@ -118,6 +118,35 @@
   align-self: flex-start; /* keep it aligned at the top-right */
 }
 
+table.compact th, table.compact td { padding: 6px 8px; }
+#statCompareBody tr:nth-child(odd) { background: var(--subtle); }
+
+/* Winner highlighting that's obvious */
+td.twin { color: #0b7; font-weight: 600; background: rgba(11,119,0,.07); }
+td.tloss{ color: #d33; background: rgba(211,51,51,.07); }
+
+/* Key Edges chips */
+.edge-badges { display:flex; flex-wrap:wrap; gap:6px; }
+.edge-badge {
+  border:1px solid var(--border); border-radius:12px; padding:2px 8px;
+  font-size:12px; white-space:nowrap; display:inline-flex; align-items:center; gap:6px;
+}
+.edge-badge .tag {
+  font-weight:600; padding:1px 6px; border-radius:8px;
+  background: var(--subtle);
+}
+.edge-badge.aheadA { border-color: #2e7d32; }
+.edge-badge.aheadB { border-color: #c62828; }
+
+/* Let the page be taller and scroll; remove internal clamp */
+#panel-compare .list { max-height: none; overflow: visible; }
+
+/* Make the whole compare page breathe vertically */
+#panel-compare { min-height: calc(100vh - 120px); }
+.combo { display:flex; flex-direction:column; gap:6px; }
+.combo .input { width: 260px; max-width: 100%; }
+
+
 
   </style>
 </head>
@@ -127,8 +156,8 @@
     <div class="row">
       <label for="themeToggle" class="muted">Theme</label>
       <select id="themeToggle" class="input" style="width:auto">
+        <option value="light" selected>Light</option>
         <option value="dark">Dark</option>
-        <option value="light">Light</option>
       </select>
     </div>
   </header>
@@ -364,52 +393,76 @@
     </section>
 
     <!-- COMPARE -->
-    <section id="panel-compare" class="panel" role="tabpanel" hidden>
-      <div class="grid">
-        <div>
-          <label>Team A</label>
-          <select id="compareA" class="input"></select>
-        </div>
-        <div>
-          <label>Team B</label>
-          <select id="compareB" class="input"></select>
-        </div>
-        <div style="align-self:end">
-          <button id="compareBtn" class="btn primary">Compare</button>
+<section id="panel-compare" class="panel" role="tabpanel" hidden>
+  <div class="grid" style="align-items:end; gap:8px; margin-bottom:8px">
+    <div>
+      <label>Team A</label>
+      <div class="combo">
+        <input id="compareASearch" class="input" placeholder="Search teams…">
+        <select id="compareA" class="input"></select>
+      </div>
+    </div>
+    <div>
+      <label>Team B</label>
+      <div class="combo">
+        <input id="compareBSearch" class="input" placeholder="Search teams…">
+        <select id="compareB" class="input"></select>
+      </div>
+    </div>
+    <div>
+      <button id="compareBtn" class="btn primary">Compare</button>
+      <button id="compareSwap" class="btn ghost" title="Swap teams">Swap</button>
+      <label class="tiny" style="margin-left:8px; user-select:none">
+        <input id="comparePerGame" type="checkbox"> Per-game
+      </label>
+    </div>
+  </div>
+
+  <div class="compare-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+    <!-- LEFT: radar & edges -->
+<div class="card" style="display:grid; grid-template-rows:auto auto; gap:10px;">
+  <div style="text-align:center">
+    <h3 style="margin:0 0 6px">Radar — Key Factors</h3>
+    <canvas id="radarCanvas" width="420" height="500" aria-label="Radar chart"
+            style="max-width:420px; width:100%; height:auto; display:block; margin-inline:auto;"></canvas>
+    <p class="tiny" style="margin-top:4px">Factors: Elo, Play, Prior, PPA(adj), Market, Returning, SoS</p>
+  </div>
+
+      <div>
+        <h3 style="margin:0 0 6px">Key Edges</h3>
+        <div id="compareEdges" class="edge-badges"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: head-to-head, then stats comparison -->
+    <div class="card" style="display:grid; grid-template-rows:auto auto; gap:10px;">
+      <div>
+        <h3 style="margin:0 0 6px">Head-to-Head & Common Opponents</h3>
+        <div id="compareH2H" class="tiny" style="opacity:.8">Select two teams and click Compare.</div>
+        <div id="compareCommon"></div>
+      </div>
+
+      <div>
+        <h3 style="margin:0 0 6px">Team Stats Comparison</h3>
+        <div class="list" style="max-height:800px; overflow:auto;">
+          <table class="compact" style="width:100%">
+            <thead>
+              <tr>
+                <th>Stat</th>
+                <th class="right" id="statTeamA">Team A</th>
+                <th class="right" id="statTeamB">Team B</th>
+              </tr>
+            </thead>
+            <tbody id="statCompareBody"></tbody>
+          </table>
         </div>
       </div>
-      <div class="divider"></div>
-      <div class="compare-grid">
-        <div class="card">
-          <h3 style="margin:0 0 6px">Radar — Key Factors</h3>
-          <canvas id="radarCanvas" width="480" height="360" aria-label="Radar chart"></canvas>
-          <p class="tiny">Factors: Elo, Play, Prior, PPA(adj), Market, Returning, SoS.</p>
-        </div>
-        <div class="card">
-          <h3 style="margin:0 0 6px">Head-to-Head & Common Opponents</h3>
-          <div class="list" style="margin-top:6px">
-            <table>
-              <thead>
-                <tr>
-                  <th>Type</th>
-                  <th>Opponent</th>
-                  <th class="right" id="thTeamA">A</th>
-                  <th class="right" id="thTeamB">B</th>
-                </tr>
-              </thead>
-              <tbody id="commonOpp"></tbody>
-            </table>
-          </div>
-          <div class="divider"></div>
-          <div class="list">
-            <table>
-              <thead><tr><th>Date</th><th>Result</th></tr></thead>
-              <tbody id="h2h"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </section>
+    </div>
+  </div>
+</section>
+
+
+
 
     <!-- CONFERENCES -->
     <section id="panel-conferences" class="panel" role="tabpanel" hidden>

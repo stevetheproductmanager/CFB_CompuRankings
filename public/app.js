@@ -268,6 +268,318 @@ function setWeightsUI(w) {
   });
 }
 
+function findTeamRowByName(name) {
+  const list = (lastRankings && (lastRankings.rankings || lastRankings)) || [];
+  return list.find(r => r.team === name) || null;
+}
+
+function perGame(val, games) {
+  if (val == null || !Number.isFinite(val)) return null;
+  const g = Math.max(1, Number(games || 0));
+  return val / g;
+}
+
+// Return CSS classes for A and B cells. lowerBetter flips the comparison.
+function cellClasses(va, vb, lowerBetter = false, epsilon = 1e-9) {
+  const a = Number(va), b = Number(vb);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return ['', ''];
+  const betterA = lowerBetter ? (a < b - epsilon) : (a > b + epsilon);
+  const betterB = lowerBetter ? (b < a - epsilon) : (b > a + epsilon);
+  if (betterA && !betterB) return ['twin', 'tloss'];
+  if (betterB && !betterA) return ['tloss', 'twin'];
+  return ['', '']; // tie
+}
+
+// Build simple “Key Edges” chips from array of [label, va(num), vb(num), lowerBetter?]
+function renderKeyEdges(edgeInputs, teamAName, teamBName) {
+  const box = document.getElementById('compareEdges');
+  if (!box) return;
+
+  const rows = edgeInputs
+    .map(([label, va, vb, lowerBetter]) => {
+      const a = Number(va), b = Number(vb);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+      // positive diff => A leads; if lowerBetter, flip sense
+      const diff = lowerBetter ? (b - a) : (a - b);
+      return { label, diff, va: a, vb: b };
+    })
+    .filter(Boolean);
+
+  if (!rows.length) { box.innerHTML = '<span class="tiny">No numeric edges available.</span>'; return; }
+
+  rows.sort((x,y) => Math.abs(y.diff) - Math.abs(x.diff));
+  const top = rows.slice(0, 5);
+
+  box.innerHTML = top.map(e => {
+    const aheadA = e.diff > 0;
+    const who = aheadA ? teamAName : teamBName;
+    return `
+      <span class="edge-badge ${aheadA? 'aheadA':'aheadB'}">
+        <span class="tag">${e.label}</span>
+        <span>${who}</span>
+        <span class="delta">+${fmt(Math.abs(e.diff), 2)}</span>
+      </span>
+    `;
+  }).join('');
+}
+
+
+function renderStatComparison(a, b, perGameMode = false) {
+  const body = document.getElementById('statCompareBody');
+  const aHdr = document.getElementById('statTeamA');
+  const bHdr = document.getElementById('statTeamB');
+  if (!body || !a || !b) return;
+
+  if (aHdr) aHdr.textContent = a.team;
+  if (bHdr) bHdr.textContent = b.team;
+
+  const gamesA = (a.wins||0) + (a.losses||0);
+  const gamesB = (b.wins||0) + (b.losses||0);
+
+  // Per-game toggles (use raw numbers for compare; format later)
+  const PF_a = perGameMode ? perGame(a.pointsFor, gamesA) : a.pointsFor;
+  const PF_b = perGameMode ? perGame(b.pointsFor, gamesB) : b.pointsFor;
+
+  // ✅ fix: use each team's own pointsAgainst
+  const PA_a = perGameMode ? perGame(a.pointsAgainst, gamesA) : a.pointsAgainst;
+  const PA_b = perGameMode ? perGame(b.pointsAgainst, gamesB) : b.pointsAgainst;
+
+  const AM_a = perGameMode ? perGame(a.pointDiff, gamesA) : a.avgMargin;
+  const AM_b = perGameMode ? perGame(b.pointDiff, gamesB) : b.avgMargin;
+
+  const rows = [
+    ['Record', `${a.wins}-${a.losses}`, `${b.wins}-${b.losses}`, false, 'string'],
+    ['Win %', a.winPct, b.winPct, false, 'pct'],
+    ['Points For' + (perGameMode? ' (pg)':''), PF_a, PF_b, false, 'num'],
+    ['Points Against' + (perGameMode? ' (pg)':''), PA_a, PA_b, true, 'num'], // lower is better
+    ['Avg Margin' + (perGameMode? ' (pg)':''), AM_a, AM_b, false, 'num'],
+    ['Elo', a.elo, b.elo, false, 'num0'],
+    ['Play Quality', a.playQuality, b.playQuality, false, 'num2'],
+    ['Prior', a.prior, b.prior, false, 'num2'],
+    ['Score', a.score, b.score, false, 'num2'],
+    ['MOV (Dom)', a.extras?.mov, b.extras?.mov, false, 'num2'],
+    ['Off Dominance', a.extras?.offDom, b.extras?.offDom, false, 'num2'],
+    ['Def Dominance', a.extras?.defDom, b.extras?.defDom, false, 'num2'],
+    ['Top-25 Wins', a.qualityWins25 || 0, b.qualityWins25 || 0, false, 'int'],
+    ['Top-50 Wins', a.qualityWins50 || 0, b.qualityWins50 || 0, false, 'int'],
+    ['Bad Losses', a.badLosses || 0, b.badLosses || 0, true, 'int'], // lower better
+    ['One-score +/-', (a.oneScoreWins||0)-(a.oneScoreLosses||0), (b.oneScoreWins||0)-(b.oneScoreLosses||0), false, 'int'],
+  ];
+
+  body.innerHTML = rows.map(([label, va, vb, lowerBetter, kind]) => {
+    const [clsA, clsB] = cellClasses(va, vb, lowerBetter);
+    const outA = (va == null || Number.isNaN(va)) ? '-' :
+      (kind==='string' ? String(va) :
+       kind==='pct' ? fmt(va,3) :
+       kind==='num0' ? fmt(va,0) :
+       kind==='int' ? fmt(va,0) :
+       fmt(va,2));
+    const outB = (vb == null || Number.isNaN(vb)) ? '-' :
+      (kind==='string' ? String(vb) :
+       kind==='pct' ? fmt(vb,3) :
+       kind==='num0' ? fmt(vb,0) :
+       kind==='int' ? fmt(vb,0) :
+       fmt(vb,2));
+    return `
+      <tr>
+        <td>${label}</td>
+        <td class="right ${clsA}">${outA}</td>
+        <td class="right ${clsB}">${outB}</td>
+      </tr>
+    `;
+  }).join('');
+
+  // Feed Key Edges a curated numeric set
+  const edgeInputs = [
+    ['Elo', a.elo, b.elo, false],
+    ['Play', a.playQuality, b.playQuality, false],
+    ['Prior', a.prior, b.prior, false],
+    ['Score', a.score, b.score, false],
+    ['Avg Margin' + (perGameMode? ' (pg)':''), AM_a, AM_b, false],
+    ['Off Dom', a.extras?.offDom, b.extras?.offDom, false],
+    ['Def Dom', a.extras?.defDom, b.extras?.defDom, false],
+    ['Top-25 Wins', a.qualityWins25||0, b.qualityWins25||0, false],
+    ['Top-50 Wins', a.qualityWins50||0, b.qualityWins50||0, false],
+    ['Bad Losses', a.badLosses||0, b.badLosses||0, true], // lower better
+  ];
+  renderKeyEdges(edgeInputs, a.team, b.team);
+}
+
+async function renderH2HAndCommon(a, b) {
+  const boxH2H = document.getElementById('compareH2H');
+  const boxCommon = document.getElementById('compareCommon');
+  if (!boxH2H || !boxCommon || !a || !b) return;
+
+  // clear placeholder
+  boxH2H.textContent = '';
+  boxCommon.textContent = '';
+
+  const year = (lastRankings && lastRankings.year) || new Date().getFullYear();
+  const throughWeek = (lastRankings && lastRankings.throughWeek) || null;
+
+  const games = await getGamesForYear(year);
+  const upto = games.filter(g => (throughWeek ? (g.week||0) <= Number(throughWeek) : true));
+
+  const isH2H = (g) =>
+    (g.homeTeam === a.team && g.awayTeam === b.team) ||
+    (g.homeTeam === b.team && g.awayTeam === a.team);
+
+  const h2h = upto.filter(isH2H).sort((x,y) => (x.week||0) - (y.week||0));
+
+  // ---- Head-to-Head
+  if (h2h.length === 0) {
+    boxH2H.innerHTML = '<div class="tiny" style="opacity:.8">No head-to-head games in range.</div>';
+  } else {
+    boxH2H.innerHTML = `
+      <table class="compact" style="width:100%">
+        <thead><tr><th>Week</th><th>Matchup</th><th class="right">Score</th><th class="right">Result</th></tr></thead>
+        <tbody>
+          ${h2h.map(g => {
+            const home = g.homeTeam, away = g.awayTeam;
+            const hp = g.homePoints, ap = g.awayPoints;
+            const loc = g.neutralSite ? 'N' : 'H/A';
+            const winner = hp>ap ? home : (ap>hp ? away : null);
+            const resA = winner ? (winner===a.team ? 'A W' : (winner===b.team ? 'A L' : 'T')) : 'T';
+            return `<tr>
+              <td>${g.week ?? '—'}</td>
+              <td>${away} @ ${home} ${g.neutralSite? '(N)' : ''}</td>
+              <td class="right">${hp ?? '-'} : ${ap ?? '-'}</td>
+              <td class="right">${resA}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  // ---- Common Opponents
+  const oppsA = new Map(); // opp -> [{us, them, week, home}]
+  const oppsB = new Map();
+
+  upto.forEach(g => {
+    if (g.homeTeam === a.team) {
+      const opp = g.awayTeam;
+      const us = g.homePoints, them = g.awayPoints;
+      (oppsA.get(opp) || oppsA.set(opp, [])).push({ us, them, week: g.week, home: true });
+    } else if (g.awayTeam === a.team) {
+      const opp = g.homeTeam;
+      const us = g.awayPoints, them = g.homePoints;
+      (oppsA.get(opp) || oppsA.set(opp, [])).push({ us, them, week: g.week, home: false });
+    }
+    if (g.homeTeam === b.team) {
+      const opp = g.awayTeam;
+      const us = g.homePoints, them = g.awayPoints;
+      (oppsB.get(opp) || oppsB.set(opp, [])).push({ us, them, week: g.week, home: true });
+    } else if (g.awayTeam === b.team) {
+      const opp = g.homeTeam;
+      const us = g.awayPoints, them = g.homePoints;
+      (oppsB.get(opp) || oppsB.set(opp, [])).push({ us, them, week: g.week, home: false });
+    }
+  });
+
+  const commons = [...oppsA.keys()].filter(k => oppsB.has(k)).sort((x,y)=>x.localeCompare(y));
+
+  if (!commons.length) {
+    boxCommon.innerHTML = '<div class="tiny" style="opacity:.8">No common opponents in range.</div>';
+    return;
+  }
+
+  // summarize first matchup vs each common opp (keeps UI tight)
+  const rows = commons.map(opp => {
+    const a1 = oppsA.get(opp)[0];
+    const b1 = oppsB.get(opp)[0];
+    const aWin = (a1.us != null && a1.them != null) ? (a1.us > a1.them) : null;
+    const bWin = (b1.us != null && b1.them != null) ? (b1.us > b1.them) : null;
+    const aCls = aWin==null ? '' : (aWin ? 'twin' : 'tloss');
+    const bCls = bWin==null ? '' : (bWin ? 'twin' : 'tloss');
+    return `
+      <tr>
+        <td>${opp}</td>
+        <td class="right ${aCls}">${a1.us ?? '-'} : ${a1.them ?? '-'} ${a1.home ? '(H)' : '(A)'}</td>
+        <td class="right ${bCls}">${b1.us ?? '-'} : ${b1.them ?? '-'} ${b1.home ? '(H)' : '(A)'}</td>
+      </tr>
+    `;
+  }).join('');
+
+  boxCommon.innerHTML = `
+    <table class="compact" style="width:100%">
+      <thead><tr><th>Opponent</th><th class="right">${a.team}</th><th class="right">${b.team}</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+
+
+function drawMiniRadar(canvas, a, b) {
+  if (!canvas || !a || !b) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  // Factors (7): pull z-scores for comparability
+  const keys = ['elo','play','prior','ppa','market','returning','sos'];
+  const labels = ['Elo','Play','Prior','PPA','Mkt','Ret','SoS'];
+  const az = a.z || {}, bz = b.z || {};
+
+  // clamp to [-2.5, 2.5] and normalize to [0,1]
+  const clamp = (x) => Math.max(-2.5, Math.min(2.5, Number.isFinite(x)? x : 0));
+  const norm = (x) => (clamp(x) + 2.5) / 5; // -2.5..+2.5 -> 0..1
+
+  const aVals = keys.map(k => norm(az[k]));
+  const bVals = keys.map(k => norm(bz[k]));
+
+  const cx = W/2, cy = H/2, rMax = Math.min(W, H)*0.42;
+
+  // grid + axes
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,0,0,.15)';
+  ctx.lineWidth = 1;
+  for (let ring=1; ring<=4; ring++) {
+    const rr = (rMax*ring)/4;
+    ctx.beginPath();
+    for (let i=0;i<keys.length;i++) {
+      const ang = (Math.PI*2*i/keys.length) - Math.PI/2;
+      const x = cx + rr*Math.cos(ang), y = cy + rr*Math.sin(ang);
+      (i===0)? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+    }
+    ctx.closePath(); ctx.stroke();
+  }
+  // radial lines + labels
+  ctx.fillStyle = 'rgba(0,0,0,.6)';
+  ctx.font = '11px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+  for (let i=0;i<keys.length;i++) {
+    const ang = (Math.PI*2*i/keys.length) - Math.PI/2;
+    const x = cx + rMax*Math.cos(ang), y = cy + rMax*Math.sin(ang);
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(x,y); ctx.stroke();
+    const lx = cx + (rMax+10)*Math.cos(ang), ly = cy + (rMax+10)*Math.sin(ang);
+    ctx.textAlign = Math.cos(ang) > 0.2 ? 'left' : (Math.cos(ang) < -0.2 ? 'right' : 'center');
+    ctx.textBaseline = Math.sin(ang) > 0.2 ? 'top' : (Math.sin(ang) < -0.2 ? 'bottom' : 'middle');
+    ctx.fillText(labels[i], lx, ly);
+  }
+  ctx.restore();
+
+  // polygon helper
+  function drawPoly(vals, stroke, fill) {
+    ctx.beginPath();
+    vals.forEach((v,i) => {
+      const ang = (Math.PI*2*i/vals.length) - Math.PI/2;
+      const rr = rMax * v;
+      const x = cx + rr*Math.cos(ang), y = cy + rr*Math.sin(ang);
+      (i===0)? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+    });
+    ctx.closePath();
+    ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = fill; ctx.fill();
+  }
+
+  // A = blue-ish, B = orange-ish (semi-transparent)
+  drawPoly(aVals, 'rgba(30, 100, 200, 0.9)', 'rgba(30, 100, 200, 0.18)');
+  drawPoly(bVals, 'rgba(230, 120, 20, 0.9)', 'rgba(230, 120, 20, 0.18)');
+}
+
+
+
 function applyWeightsToUI(w) {
   if (!w) return;
   Object.entries(w).forEach(([k,v])=>{
@@ -629,13 +941,15 @@ function renderTable(rows, meta) {
   });
 
   // populate compare selects
-  if (compareA && compareB) {
-    compareA.innerHTML = ''; compareB.innerHTML = '';
-    rows.forEach(r=>{ 
-      compareA.append(new Option(r.team, r.team)); 
-      compareB.append(new Option(r.team, r.team)); 
-    });
-  }
+if (compareA && compareB) {
+  const names = rows.map(r => r.team);
+  // initial full options
+  compareA.innerHTML = ''; compareB.innerHTML = '';
+  names.forEach(n => { compareA.append(new Option(n, n)); compareB.append(new Option(n, n)); });
+  // attach search filtering (uses the same names)
+  setupSelectSearch('compareA', 'compareASearch', names);
+  setupSelectSearch('compareB', 'compareBSearch', names);
+}
 }
 
 
@@ -1155,7 +1469,111 @@ updateDrawerNavButtons(0);
 
 // ---------- compare ----------
 let radarChart = null;
-onId('compareBtn', 'click', () => doCompare());
+
+onId('compareBtn', 'click', async () => {
+  const selA = document.getElementById('compareA');
+  const selB = document.getElementById('compareB');
+  const perGameChk = document.getElementById('comparePerGame');
+  if (!selA || !selB) return;
+
+  const nameA = selA.value;
+  const nameB = selB.value;
+  if (!nameA || !nameB) { alert('Pick two teams first.'); return; }
+
+  const a = findTeamRowByName(nameA);
+  const b = findTeamRowByName(nameB);
+  if (!a || !b) { alert('Could not find teams in current rankings. Re-run rankings and try again.'); return; }
+
+  const perGameMode = !!(perGameChk && perGameChk.checked);
+
+  // Stats + Key Edges
+  renderStatComparison(a, b, perGameMode);
+
+  // Radar
+  const canvas = document.getElementById('radarCanvas');
+  drawMiniRadar(canvas, a, b);
+
+  // Head-to-Head + Common Opponents
+  await renderH2HAndCommon(a, b);
+});
+
+// auto-recompare on change
+['compareA','compareB','comparePerGame'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', () => {
+    const btn = document.getElementById('compareBtn');
+    if (btn) btn.click();
+  });
+});
+['compareASearch','compareBSearch'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('input', () => {
+    const btn = document.getElementById('compareBtn');
+    // run automatically if both selects currently have a value
+    const a = document.getElementById('compareA');
+    const b = document.getElementById('compareB');
+    if (btn && a && b && a.value && b.value) btn.click();
+  });
+});
+
+// swap teams
+onId('compareSwap', 'click', () => {
+  const a = document.getElementById('compareA');
+  const b = document.getElementById('compareB');
+  if (!a || !b) return;
+  const tmp = a.value; a.value = b.value; b.value = tmp;
+  const btn = document.getElementById('compareBtn');
+  if (btn) btn.click();
+});
+
+// Make a <select> searchable via an adjacent <input>
+function setupSelectSearch(selectId, inputId, allNames) {
+  const sel = document.getElementById(selectId);
+  const inp = document.getElementById(inputId);
+  if (!sel || !inp) return;
+
+  // keep the master list per select
+  sel._allNames = Array.isArray(allNames) ? allNames.slice() : [];
+
+  function rebuildOptions(query = '') {
+    const q = query.trim().toLowerCase();
+    const prior = sel.value;
+    const source = sel._allNames || [];
+    const filtered = q
+      ? source.filter(n => n.toLowerCase().includes(q))
+      : source;
+
+    sel.innerHTML = '';
+    filtered.forEach(n => sel.append(new Option(n, n)));
+
+    // keep prior selection if still present
+    if (prior && filtered.includes(prior)) {
+      sel.value = prior;
+    } else if (!sel.value && filtered.length) {
+      sel.value = filtered[0];
+    }
+  }
+
+  // Bind once
+  if (!inp._boundSearch) {
+    inp.addEventListener('input', () => rebuildOptions(inp.value));
+    // Enter selects first filtered result and fires change
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (sel.options.length) {
+          sel.value = sel.options[0].value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }
+    });
+    inp._boundSearch = true;
+  }
+
+  // initial fill
+  rebuildOptions(inp.value || '');
+}
+
 
 async function doCompare() {
   if (!lastRankings) { alert('Run a ranking first (Step 2) to load teams.'); return; }
