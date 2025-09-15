@@ -76,6 +76,21 @@ const resumeBox      = $('resumeBox');
 const recentGamesBox = $('recentGames');
 onId('drawerClose', 'click', () => { if (drawer) drawer.classList.remove('open'); if (overlay) overlay.classList.remove('show'); });
 
+// NEW: drawer nav controls
+const drawerFirst = $('drawerFirst');
+const drawerPrev  = $('drawerPrev');
+const drawerNext  = $('drawerNext');
+const drawerLast  = $('drawerLast');
+let drawerIndex = -1;
+
+// Click-away to close (closes either drawer if open)
+if (overlay) overlay.addEventListener('click', () => {
+  if (drawer)     drawer.classList.remove('open');
+  if (confDrawer) confDrawer.classList.remove('open');
+  overlay.classList.remove('show');
+});
+
+
 // drawers (conference)
 const confDrawer         = $('confDrawer');
 const confDrawerTitle    = $('confDrawerTitle');
@@ -89,10 +104,84 @@ const buildConfBtn  = $('buildConfBtn');
 const confTbody     = $('confTbody');
 const exportConfPdf = $('exportConfPdf');
 
+// ---------- robust helpers for games + names ----------
+function firstDefined(...vals) { for (const v of vals) if (v !== undefined && v !== null) return v; }
+function canonName(s) { return String(s || '').toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]/g, ''); }
+
+function gWeek(g)     { return Number(firstDefined(g.week, g.week_number, g.weekNumber, g.w, 0)); }
+function gHomeTeam(g) { return String(firstDefined(g.homeTeam, g.home_team, g.home, g.teamHome, g.home_name, g?.teams?.home) || ''); }
+function gAwayTeam(g) { return String(firstDefined(g.awayTeam, g.away_team, g.away, g.teamAway, g.away_name, g?.teams?.away) || ''); }
+function gHomePts(g)  { return firstDefined(g.homePoints, g.home_points, g.homeScore, g.pointsHome, g.home_points_total); }
+function gAwayPts(g)  { return firstDefined(g.awayPoints, g.away_points, g.awayScore, g.pointsAway, g.away_points_total); }
+
+const __gamesCache = new Map();
+/** Try several likely endpoints; cache first success. */
+async function getGamesForYear(year) {
+  if (__gamesCache.has(year)) return __gamesCache.get(year);
+
+  const qs = y => `year=${encodeURIComponent(String(y))}`;
+  const candidates = [
+    `/api/team-games?all=1&${qs(year)}`,
+    `/api/games-from-cache?${qs(year)}`,
+    `/api/games?${qs(year)}`
+  ];
+
+  for (const url of candidates) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      if (Array.isArray(data) && data.length) {
+        __gamesCache.set(year, data);
+        return data;
+      }
+      // some APIs return {games:[...]}
+      if (data && Array.isArray(data.games)) {
+        __gamesCache.set(year, data.games);
+        return data.games;
+      }
+    } catch (_) { /* keep trying */ }
+  }
+
+  // graceful fallback
+  __gamesCache.set(year, []);
+  return [];
+}
+
+const toggleBtn = document.getElementById('toggleControls');
+const controlsPanel = document.getElementById('controlsPanel');
+
+if (toggleBtn && controlsPanel) {
+  toggleBtn.addEventListener('click', () => {
+    const isOpen = controlsPanel.classList.contains('open');
+    if (isOpen) {
+      controlsPanel.classList.remove('open');
+      controlsPanel.classList.add('closed');
+      toggleBtn.textContent = 'Show Controls ▼';
+    } else {
+      controlsPanel.classList.remove('closed');
+      controlsPanel.classList.add('open');
+      toggleBtn.textContent = 'Hide Controls ▲';
+    }
+  });
+}
+
+
+
 // ---------- utils ----------
 function fmt(n, d = 2) { return n == null ? '—' : Number(n).toFixed(d); }
 function confBadge(conf) { const c = conf || ''; const bg = CONF_COLORS[c] || 'var(--chip)'; return `<span class="conf" style="background:${bg};color:#fff;padding:2px 8px;border-radius:999px">${c}</span>`; }
 function showConfirm(msg, cb) { const confirmText = $('confirmText'); const confirmDlg = $('confirmDlg'); if (!confirmDlg || !confirmText) return cb && cb(); confirmText.textContent = msg; confirmDlg.showModal(); const onOk = () => { cb && cb(); confirmDlg.close(); cleanup(); }; const onCancel = () => { confirmDlg.close(); cleanup(); }; const cleanup = () => { $('confirmOk')?.removeEventListener('click', onOk); $('confirmCancel')?.removeEventListener('click', onCancel); }; onId('confirmOk', 'click', onOk); onId('confirmCancel', 'click', onCancel); }
+
+// --- robust field access helpers for cached games ---
+function firstDefined(...vals) { for (const v of vals) if (v !== undefined && v !== null) return v; return undefined; }
+function canonName(s) { return String(s || '').toLowerCase().replace(/&/g,'and').replace(/[^a-z0-9]/g,''); }
+
+function gWeek(g) { return Number(firstDefined(g.week, g.week_number, g.weekNumber, g.w, 0)); }
+function gHomeTeam(g) { return String(firstDefined(g.homeTeam, g.home_team, g.home, g.teamHome, g.home_name, g?.teams?.home) || ''); }
+function gAwayTeam(g) { return String(firstDefined(g.awayTeam, g.away_team, g.away, g.teamAway, g.away_name, g?.teams?.away) || ''); }
+function gHomePts(g) { return firstDefined(g.homePoints, g.home_points, g.homeScore, g.pointsHome, g.home_points_total); }
+function gAwayPts(g) { return firstDefined(g.awayPoints, g.away_points, g.awayScore, g.pointsAway, g.away_points_total); }
 
 // ---------- conference colors ----------
 const CONF_COLORS = {
@@ -233,8 +322,29 @@ onId('loadPreset', 'click', () => {
   const name = prompt(`Enter a preset name:\n${names.join(', ')}`);
   if (!name || !presets[name]) { alert('Preset not found.'); return; }
   applyWeightsToUI(presets[name]);
+  runRank();
   alert(`Loaded preset "${name}".`);
 });
+
+function initPresetDropdown(selectEl = document.getElementById('presetSelect')) {
+  if (!selectEl) return;
+  const presets = getPresets();
+  const names = Object.keys(presets).sort((a,b)=> a.localeCompare(b));
+  if (!names.length) {
+    selectEl.innerHTML = `<option value="" disabled selected>(no presets)</option>`;
+    selectEl.disabled = true;
+    return;
+  }
+  selectEl.disabled = false;
+  selectEl.innerHTML = names.map(n => `<option value="${encodeURIComponent(n)}">${n}</option>`).join('');
+}
+
+function getSelectedPresetName() {
+  const sel = document.getElementById('presetSelect');
+  if (!sel || sel.disabled || !sel.value) return null;
+  return decodeURIComponent(sel.value);
+}
+
 
 onId('exportCsv', 'click', () => {
   const rows = (lastRankings && (lastRankings.rankings || lastRankings)) || [];
@@ -342,6 +452,7 @@ onId('exportPdf', 'click', () => {
 onId('resetDefaults', 'click', () => {
   if (profileSel) profileSel.value = 'balanced';
   applyProfile(profileSel?.value || 'balanced');
+  runRank();
 });
 
 onId('rankBtn', 'click', () => runRank(false));
@@ -485,7 +596,7 @@ function renderTable(rows, meta) {
       <td class="right">${fmt(r.elo,0)}</td>
       <td class="right">${fmt(r.playQuality,2)}</td>
       <td class="right">${fmt(r.prior,2)}</td>
-      <td class="right">${fmt(r.score,2)}</td>
+      <td class="right score-cell" data-score="${fmt(r.score,2)}">${fmt(r.score,2)}</td>
       <td class="right">${r.deltaRank||''}</td>
       <td class="right">${fmt(r.deltaScore,2)}</td>
       <td class="right">${fmt(ex.ppa,2)}</td>
@@ -499,15 +610,34 @@ function renderTable(rows, meta) {
       <td class="right">${(r.recTop50W||0)}-${(r.recTop50L||0)}</td>
       <td class="right">${(r.oneScoreW||0)}-${(r.oneScoreL||0)}</td>
     `;
-    tr.addEventListener('click', ()=> openDrawer(r));
+
+    tr.addEventListener('click', (e) => {
+      const cell = e.target.closest('td');
+      if (cell && cell.classList.contains('score-cell')) {
+        const val = cell.dataset.score || cell.textContent.trim();
+        navigator.clipboard.writeText(val).then(() => {
+          cell.classList.add('copied');
+          setTimeout(() => cell.classList.remove('copied'), 500);
+        });
+        e.stopPropagation(); // don’t open drawer
+        return;
+      }
+      openDrawer(r);
+    });
+
     rankTbody && rankTbody.appendChild(tr);
   });
+
   // populate compare selects
   if (compareA && compareB) {
     compareA.innerHTML = ''; compareB.innerHTML = '';
-    rows.forEach(r=>{ compareA.append(new Option(r.team, r.team)); compareB.append(new Option(r.team, r.team)); });
+    rows.forEach(r=>{ 
+      compareA.append(new Option(r.team, r.team)); 
+      compareB.append(new Option(r.team, r.team)); 
+    });
   }
 }
+
 
 // ---------- conference rankings ----------
 function buildConferenceRankings() {
@@ -656,63 +786,342 @@ function exportConferencePdf() {
 }
 
 // ---------- drawers ----------
-let _gamesCache = null;
-async function getGamesForYear(year){
-  if (_gamesCache && _gamesCache.year===year) return _gamesCache.data;
-  const r = await fetch(`/api/cache-data?year=${year}&kind=games`).then(r=>r.json()).catch(()=>[]);
-  _gamesCache = {year, data: Array.isArray(r)? r : (r.data||[]) };
-  return _gamesCache.data;
+// ---------- drawers ----------
+let _gamesCache = new Map(); // key: year -> array of games
+
+// Field helpers (robust to API/case/shape differences)
+function _firstDefined(...vals) { for (const v of vals) if (v !== undefined && v !== null) return v; }
+function _canonName(s) { return String(s || '').toLowerCase().replace(/&/g,'and').replace(/[^a-z0-9]/g,''); }
+
+function gWeek(g)     { return Number(_firstDefined(g.week, g.week_number, g.weekNumber, g.w, 0)); }
+function gHomeTeam(g) { return String(_firstDefined(g.homeTeam, g.home_team, g.home, g.teamHome, g.home_name, g?.teams?.home) || ''); }
+function gAwayTeam(g) { return String(_firstDefined(g.awayTeam, g.away_team, g.away, g.teamAway, g.away_name, g?.teams?.away) || ''); }
+function gHomePts(g)  { return _firstDefined(g.homePoints, g.home_points, g.homeScore, g.pointsHome, g.home_points_total); }
+function gAwayPts(g)  { return _firstDefined(g.awayPoints, g.away_points, g.awayScore, g.pointsAway, g.away_points_total); }
+
+/**
+ * Try several endpoints and response shapes, cache the first success per year.
+ * Update the `candidates` array if your backend uses a different path.
+ */
+async function getGamesForYear(year) {
+  if (_gamesCache.has(year)) return _gamesCache.get(year);
+
+  const qs = `year=${encodeURIComponent(String(year))}`;
+
+  // Ordered by likelihood; add/remove to match your server.
+  const candidates = [
+    `/api/games-from-cache?${qs}`,
+    `/api/team-games?all=1&${qs}`,
+    `/api/games?${qs}`,
+    // your previous (404) endpoint kept last, in case you add it later:
+    `/api/cache-data?${qs}&kind=games`,
+  ];
+
+  for (const url of candidates) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) { console.debug('[getGamesForYear] skip', url, resp.status); continue; }
+      let data = await resp.json();
+
+      // normalize common shapes
+      if (Array.isArray(data)) {
+        _gamesCache.set(year, data);
+        return data;
+      }
+      if (data && Array.isArray(data.games)) {
+        _gamesCache.set(year, data.games);
+        return data.games;
+      }
+      if (data && Array.isArray(data.data)) {
+        _gamesCache.set(year, data.data);
+        return data.data;
+      }
+      console.debug('[getGamesForYear] unrecognized JSON shape from', url, data);
+    } catch (e) {
+      console.debug('[getGamesForYear] fetch failed', url, e?.message || e);
+    }
+  }
+
+  console.warn('[getGamesForYear] no game endpoint responded; returning []');
+  _gamesCache.set(year, []);
+  return [];
 }
 
-async function fillRecentGames(team, year, throughWeek){
+async function fillRecentGames(team, year, throughWeek) {
+  const recentTbody = document.getElementById('recentGames');
+  if (!recentTbody) return;
+
   const games = await getGamesForYear(year);
-  const upto = games.filter(g=> (throughWeek? (g.week||0) <= Number(throughWeek) : true));
-  const any = upto.filter(g=> g.homeTeam===team || g.awayTeam===team).sort((a,b)=> (b.week||0)-(a.week||0)).slice(0,5);
-  if (!recentGamesBox) return;
-  recentGamesBox.innerHTML = any.map(g=>{
-    const isHome = g.homeTeam===team, opp = isHome? g.awayTeam : g.homeTeam;
-    const us = isHome? g.homePoints : g.awayPoints;
-    const them = isHome? g.awayPoints : g.homePoints;
-    const wl = (us!=null && them!=null) ? (us>them?'W':(us<them?'L':'T')) : '?';
-    const loc = isHome? 'vs' : 'at';
-    return `<tr><td>${g.week}</td><td>${opp}</td><td>${loc}</td><td class="right">${us!=null?us:'-'}:${them!=null?them:'-' } (${wl})</td></tr>`;
+  const tw = throughWeek ? Number(throughWeek) : undefined;
+  const teamKey = _canonName(team);
+  
+  const rankByTeam = new Map(
+    ((lastRankings && lastRankings.rankings) || []).map(row => [row.team, row.rank])
+  );
+
+  const rows = games
+    .filter(g => (tw ? gWeek(g) <= tw : true))
+    .filter(g => {
+      const h = _canonName(gHomeTeam(g));
+      const a = _canonName(gAwayTeam(g));
+      return h === teamKey || a === teamKey;
+    })
+    .sort((a, b) => gWeek(b) - gWeek(a))
+    .slice(0, 5);
+
+  if (!rows.length) {
+    recentTbody.innerHTML = `<tr><td colspan="4" class="tiny">No games found for this team in the selected range.</td></tr>`;
+    return;
+  }
+
+  recentTbody.innerHTML = rows.map(g => {
+    const h = gHomeTeam(g);
+    const a = gAwayTeam(g);
+    const isHome = _canonName(h) === teamKey;
+
+    const us   = isHome ? gHomePts(g) : gAwayPts(g);
+    const them = isHome ? gAwayPts(g) : gHomePts(g);
+    const wl   = (us != null && them != null) ? (us > them ? 'W' : (us < them ? 'L' : 'T')) : '';
+    const loc  = isHome ? 'vs' : 'at';
+    const opp  = isHome ? a : h;
+    
+    const oppRank = rankByTeam.get(opp);
+    const oppHtml = oppRank ? `${opp} <span class="tiny">(${oppRank})</span>` : opp;
+
+    return `<tr>
+      <td>${g.week ?? '—'}</td>
+      <td>${oppHtml}</td>
+      <td>${loc}</td>
+      <td class="right">${us != null ? us : '-'}:${them != null ? them : '-'} (${wl})</td>
+    </tr>`;
   }).join('');
 }
 
-function openDrawer(r) {
-  if (!drawer || !overlay) return;
-  if (drawerTitle)    drawerTitle.textContent = r.team;
-  if (drawerSubtitle) drawerSubtitle.textContent = `Rank ${r.rank}, Conf ${r.conference||''}`;
-  if (stackBar) stackBar.innerHTML='';
-  const segs = [
-    ['elo','Elo',r.contr?.elo],
-    ['play','Play',r.contr?.play],
-    ['prior','Prior',r.contr?.prior],
-    ['ppa','PPA',r.contr?.ppa],
-    ['market','Market',r.contr?.market],
-    ['returning','Returning',r.contr?.returning],
-    ['ext','Ext',r.contr?.ext],
-    ['mov','MOV', r.contr?.mov],
-    ['off','Off', r.contr?.off],
-    ['def','Def', r.contr?.def],
-    ['sos','SoS',r.contr?.sos],
-  ].filter(x => x && x[2] != null);
-  const tot = segs.reduce((a,b)=>a+Math.abs(b[2]||0),0)||1;
-  if (stackBar) {
-    segs.forEach(([cls,_label,val])=>{
-      const div = document.createElement('div');
-      div.className = 'seg '+cls;
-      div.style.width = `${(Math.abs(val)/tot*100).toFixed(1)}%`;
-      stackBar.appendChild(div);
-    });
-  }
-  if (stackLegend) stackLegend.textContent = segs.map(([_,label,val])=>`${label}:${fmt(val,2)}`).join(' • ');
-  if (zScoresBox)  zScoresBox.textContent = Object.entries(r.z||{}).map(([k,v])=>`${k}:${fmt(v,2)}`).join(' | ');
-  if (resumeBox)   resumeBox.textContent = `QW25:${r.qualityWins25||0} QW50:${r.qualityWins50||0} BadL:${r.badLosses||0} One-score:${(r.oneScoreW||0)}-${(r.oneScoreL||0)}`;
-
-  fillRecentGames(r.team, (lastRankings&&lastRankings.year)||new Date().getFullYear(), (lastRankings&&lastRankings.throughWeek)||'');
-  overlay.classList.add('show'); drawer.classList.add('open');
+function getRankingList() {
+  // Returns the array of current ranking rows in-order
+  return (lastRankings && (lastRankings.rankings || lastRankings)) || [];
 }
+
+function updateDrawerNavButtons(total) {
+  const invalid = !(Number.isInteger(drawerIndex) && drawerIndex >= 0 && total > 0);
+  [drawerFirst, drawerPrev, drawerNext, drawerLast].forEach(btn => { if (btn) btn.disabled = invalid; });
+  if (invalid) return;
+  if (drawerFirst) drawerFirst.disabled = drawerIndex <= 0;
+  if (drawerPrev)  drawerPrev.disabled  = drawerIndex <= 0;
+  if (drawerNext)  drawerNext.disabled  = drawerIndex >= total - 1;
+  if (drawerLast)  drawerLast.disabled  = drawerIndex >= total - 1;
+}
+
+function openByOffset(offset) {
+  const list = getRankingList();
+  if (!list.length || drawerIndex < 0) return;
+  const next = Math.max(0, Math.min(list.length - 1, drawerIndex + offset));
+  if (next === drawerIndex) return;
+  openDrawer(list[next]); // re-renders drawer for new team
+}
+
+
+
+function renderResumeStats(r) {
+  const box = document.getElementById('resumeBox'); // existing container
+  if (!box) return;
+
+  const qw25 = r.qualityWins25 ?? r.qw25 ?? 0;
+  const qw50 = r.qualityWins50 ?? r.qw50 ?? 0;
+  const badL = r.badLosses ?? r.bad ?? 0;
+  const osW  = r.oneScoreW ?? r.oneScoreWins ?? 0;
+  const osL  = r.oneScoreL ?? r.oneScoreLosses ?? 0;
+
+  box.innerHTML = `
+    <div class="resume-chips">
+      <span class="badge">Top-25 wins: ${qw25}</span>
+      <span class="badge">Top-50 wins: ${qw50}</span>
+      <span class="badge">Bad losses: ${badL}</span>
+      <span class="badge">One-score: ${osW}-${osL}</span>
+    </div>
+  `;
+}
+
+
+
+function renderZScores(z) {
+  if (!zScoresBox) return;
+  const labels = { elo:'Elo', play:'Play', prior:'Prior', ppa:'PPA', market:'Market', returning:'Returning',
+                   mov:'MOV', off:'Off', def:'Def', sos:'SoS' };
+  const entries = Object.entries(z || {})
+    .filter(([,v]) => v != null)
+    .sort((a,b) => Math.abs(b[1]) - Math.abs(a[1])); // biggest first
+
+  if (!entries.length) { zScoresBox.innerHTML = '<span class="tiny">—</span>'; return; }
+
+  zScoresBox.innerHTML = entries.map(([k, v]) => {
+    const sign = v >= 0 ? '+' : '';
+    const bg = v >= 0 ? 'rgba(16,133,72,.18)' : 'rgba(200,32,44,.18)';
+    const bd = v >= 0 ? '#2e7d32' : '#c62828';
+    return `<span class="badge" style="background:${bg}; border-color:${bd}">
+      ${labels[k] || k}: ${sign}${fmt(v,2)}
+    </span>`;
+  }).join(' ');
+}
+
+function renderContribStack(contr) {
+  if (!stackBar) return;
+  // normalize + sort by magnitude for visual clarity
+  const segs = [
+    ['elo','Elo', contr?.elo],
+    ['play','Play', contr?.play],
+    ['prior','Prior', contr?.prior],
+    ['ppa','PPA', contr?.ppa],
+    ['market','Market', contr?.market],
+    ['returning','Returning', contr?.returning],
+    ['ext','Ext', contr?.ext],
+    ['mov','MOV', contr?.mov],
+    ['off','Off', contr?.off],
+    ['def','Def', contr?.def],
+    ['sos','SoS', contr?.sos],
+  ].filter(([, , v]) => v != null).sort((a,b) => Math.abs(b[2]) - Math.abs(a[2]));
+
+  const pos = segs.filter(([, , v]) => v > 0);
+  const neg = segs.filter(([, , v]) => v < 0);
+  const posSum = pos.reduce((s,[, , v]) => s + v, 0);
+  const negSum = neg.reduce((s,[, , v]) => s + Math.abs(v), 0);
+  const total = (posSum + negSum) || 1;
+
+  stackBar.innerHTML = ''; // container (already flex per CSS .bar > div)
+  // two wraps (left: negatives, right: positives)
+  const negWrap = document.createElement('div');
+  negWrap.style.display = 'flex';
+  negWrap.style.flex = '0 0 auto';
+  negWrap.style.width = `${(negSum/total*100).toFixed(1)}%`;
+
+  const posWrap = document.createElement('div');
+  posWrap.style.display = 'flex';
+  posWrap.style.flex = '0 0 auto';
+  posWrap.style.width = `${(posSum/total*100).toFixed(1)}%`;
+
+  neg.forEach(([cls, label, val]) => {
+    const d = document.createElement('div');
+    d.className = 'seg ' + cls;
+    d.style.width = `${(Math.abs(val)/(negSum || 1)*100).toFixed(1)}%`;
+    d.title = `${label}: ${fmt(val,2)}`;
+    negWrap.appendChild(d);
+  });
+  pos.forEach(([cls, label, val]) => {
+    const d = document.createElement('div');
+    d.className = 'seg ' + cls;
+    d.style.width = `${(Math.abs(val)/(posSum || 1)*100).toFixed(1)}%`;
+    d.title = `${label}: ${fmt(val,2)}`;
+    posWrap.appendChild(d);
+  });
+
+  stackBar.appendChild(negWrap);
+  stackBar.appendChild(posWrap);
+
+  if (stackLegend) {
+    stackLegend.innerHTML = segs.map(([cls, label, val]) => {
+      const sign = val >= 0 ? '+' : '';
+      return `<span class="badge"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px" class="seg ${cls}"></span>${label}: ${sign}${fmt(val,2)}</span>`;
+    }).join(' ');
+  }
+}
+
+
+// Renders the Résumé chips in a tidy way
+function renderResumeStats(r) {
+  // if you already have a cached reference, use it; otherwise query
+  const box = (typeof resumeBox !== 'undefined' && resumeBox)
+    ? resumeBox
+    : document.getElementById('resumeBox');
+  if (!box) return;
+
+  const qw25 = r.qualityWins25 ?? r.qw25 ?? 0;
+  const qw50 = r.qualityWins50 ?? r.qw50 ?? 0;
+  const badL = r.badLosses ?? r.bad ?? 0;
+  const osW  = r.oneScoreW ?? r.oneScoreWins ?? 0;
+  const osL  = r.oneScoreL ?? r.oneScoreLosses ?? 0;
+
+  box.innerHTML = `
+    <div class="resume-chips">
+      <span class="badge">Top-25 wins: ${qw25}</span>
+      <span class="badge">Top-50 wins: ${qw50}</span>
+      <span class="badge">Bad losses: ${badL}</span>
+      <span class="badge">One-score: ${osW}-${osL}</span>
+    </div>
+  `;
+}
+
+// ===== MERGED VERSION =====
+// ===== FIXED: sets drawerIndex and updates nav buttons =====
+function openDrawer(r) {
+  // Use existing refs if you have them; otherwise query
+  const _drawer   = (typeof drawer !== 'undefined' && drawer) ? drawer : document.getElementById('explainDrawer');
+  const _overlay  = (typeof overlay !== 'undefined' && overlay) ? overlay : document.getElementById('drawerOverlay');
+  const _titleEl  = (typeof drawerTitle !== 'undefined' && drawerTitle) ? drawerTitle : document.getElementById('drawerTitle');
+  const _subEl    = (typeof drawerSubtitle !== 'undefined' && drawerSubtitle) ? drawerSubtitle : document.getElementById('drawerSubtitle');
+
+  if (!_drawer || !_overlay) return;
+
+  // --- NEW: remember which team is open (enables Prev/Next) ---
+  const list = getRankingList();                 // current sorted rows
+  drawerIndex = list.findIndex(x => x.team === r.team);
+  updateDrawerNavButtons(list.length);           // enable/disable buttons based on position
+
+  // Header
+  if (_titleEl) _titleEl.textContent = r.team;
+  if (_subEl)   _subEl.textContent   = `Rank ${r.rank}${r.conference ? `, Conf ${r.conference}` : ''}`;
+
+  // Stacked contributions, Z-scores, Résumé
+  if (typeof renderContribStack === 'function') renderContribStack(r.contr);
+  if (typeof renderZScores     === 'function') renderZScores(r.z);
+  if (typeof renderResumeStats === 'function') renderResumeStats(r);
+
+  // Recent games
+  const yr = (typeof lastRankings !== 'undefined' && lastRankings && lastRankings.year) || new Date().getFullYear();
+  const tw = (typeof lastRankings !== 'undefined' && lastRankings && lastRankings.throughWeek) || '';
+  if (typeof fillRecentGames === 'function') fillRecentGames(r.team, yr, tw);
+
+  // Open
+  _overlay.classList.add('show');
+  _drawer.classList.add('open');
+
+  // Click-away + Esc to close (and clean up listeners)
+  const closeDrawer = () => {
+    _overlay.classList.remove('show');
+    _drawer.classList.remove('open');
+    document.removeEventListener('keydown', escHandler);
+    _overlay.removeEventListener('click', overlayHandler);
+  };
+  const overlayHandler = (e) => { if (e.target === _overlay) closeDrawer(); };
+  const escHandler     = (e) => { if (e.key === 'Escape') closeDrawer(); };
+
+  _overlay.addEventListener('click', overlayHandler);
+  document.addEventListener('keydown', escHandler);
+}
+
+
+// NEW: button click handlers
+if (drawerPrev)  drawerPrev.addEventListener('click',  () => openByOffset(-1));
+if (drawerNext)  drawerNext.addEventListener('click',  () => openByOffset(1));
+if (drawerFirst) drawerFirst.addEventListener('click', () => {
+  const list = getRankingList(); if (list.length) openDrawer(list[0]);
+});
+if (drawerLast)  drawerLast.addEventListener('click',  () => {
+  const list = getRankingList(); if (list.length) openDrawer(list[list.length - 1]);
+});
+
+// NEW: keyboard nav while drawer is open
+document.addEventListener('keydown', (e) => {
+  if (!drawer || !drawer.classList.contains('open')) return;
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  if (['INPUT','SELECT','TEXTAREA'].includes(tag)) return; // avoid hijacking inputs
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); openByOffset(-1); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); openByOffset(1); }
+  if (e.key === 'Home')       { e.preventDefault(); const list = getRankingList(); if (list.length) openDrawer(list[0]); }
+  if (e.key === 'End')        { e.preventDefault(); const list = getRankingList(); if (list.length) openDrawer(list[list.length - 1]); }
+  if (e.key === 'Escape')     { e.preventDefault(); overlay?.click(); }
+});
+
+
 
 function openConfDrawer(confName) {
   if (!lastRankings || !confDrawer || !confTeamsTbody || !overlay) return;
@@ -723,6 +1132,9 @@ function openConfDrawer(confName) {
 
   if (confDrawerTitle)    confDrawerTitle.textContent = confName;
   if (confDrawerSubtitle) confDrawerSubtitle.innerHTML = `${teams.length} teams • ${confBadge(confName)}`;
+
+drawerIndex = -1;
+updateDrawerNavButtons(0);
 
   confTeamsTbody.innerHTML = teams.map(t => `
       <tr>

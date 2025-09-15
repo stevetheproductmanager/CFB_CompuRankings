@@ -777,4 +777,64 @@ app.get('/api/rankings', (req, res) => {
   res.status(404).json({ error: 'No rankings yet — run /api/rank-from-cache' });
 });
 
+// --- NEW: tiny helper to read a cached JSON file safely
+function _readYearArray<T = any>(prefix: string, year: number): T[] {
+  const p = path.join(DATA_DIR, `${prefix}-${year}.json`);
+  if (!fs.existsSync(p)) throw new Error(`No file ${path.basename(p)} — run /api/ingest first`);
+  const raw = readJSON<any>(p);
+  if (Array.isArray(raw)) return raw as T[];
+  if (raw && Array.isArray(raw.data)) return raw.data as T[];
+  if (raw && Array.isArray(raw.games)) return raw.games as T[];
+  return [];
+}
+
+// --- NEW: games endpoints (the drawer tries these in order)
+
+// 1) Simple: /api/games?year=YYYY  -> returns array of games
+app.get('/api/games', (req, res) => {
+  try {
+    const year = Number(req.query.year || DEFAULT_YEAR);
+    const data = _readYearArray('games', year);
+    res.json(data);
+  } catch (e: any) {
+    res.status(404).json({ error: e.message || 'Not found' });
+  }
+});
+
+// 2) Alias: /api/games-from-cache?year=YYYY  -> same response shape
+app.get('/api/games-from-cache', (req, res) => {
+  try {
+    const year = Number(req.query.year || DEFAULT_YEAR);
+    const data = _readYearArray('games', year);
+    res.json(data);
+  } catch (e: any) {
+    res.status(404).json({ error: e.message || 'Not found' });
+  }
+});
+
+// 3) Alias: /api/team-games?all=1&year=YYYY  -> same response shape
+app.get('/api/team-games', (req, res) => {
+  try {
+    const year = Number(req.query.year || DEFAULT_YEAR);
+    const data = _readYearArray('games', year);
+    res.json(data);
+  } catch (e: any) {
+    res.status(404).json({ error: e.message || 'Not found' });
+  }
+});
+
+// 4) Legacy shape: /api/cache-data?year=YYYY&kind=games  -> { data: [...] }
+app.get('/api/cache-data', (req, res) => {
+  try {
+    const kind = String(req.query.kind || '');
+    const year = Number(req.query.year || DEFAULT_YEAR);
+    if (kind !== 'games') throw new Error('Unsupported kind (expected kind=games)');
+    const data = _readYearArray('games', year);
+    res.json({ year, kind, data });
+  } catch (e: any) {
+    res.status(404).json({ error: e.message || 'Not found' });
+  }
+});
+
+
 app.listen(PORT, () => console.log(`Two-step server v1.7 http://localhost:${PORT}`));
