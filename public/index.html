@@ -340,12 +340,10 @@ td.tloss{ color: #d33; background: rgba(211,51,51,.07); }
 
       <div class="toolbar" style="margin-top:8px">
         <button id="rankBtn" class="btn primary">Rank from Cache</button>
-        <button id="deltaBtn" class="btn">Δ Week</button>
         <button id="resetDefaults" class="btn">Reset default</button>
         <button id="savePreset" class="btn">Save preset</button>
         <button id="loadPreset" class="btn">Load preset</button>
         <div class="spacer"></div>
-        <div id="dataBadges" class="chips"></div>
         <button id="exportPdf" class="btn ghost">Export PDF</button>
         <button id="exportCsv" class="btn ghost">Export CSV</button>
       </div>
@@ -397,18 +395,15 @@ td.tloss{ color: #d33; background: rgba(211,51,51,.07); }
   <div class="grid" style="align-items:end; gap:8px; margin-bottom:8px">
     <div>
       <label>Team A</label>
-      <div class="combo">
-        <input id="compareASearch" class="input" placeholder="Search teams…">
-        <select id="compareA" class="input"></select>
-      </div>
+      <input id="compareA" class="input" list="compareAList" placeholder="Search team…">
+      <datalist id="compareAList"></datalist>
     </div>
     <div>
       <label>Team B</label>
-      <div class="combo">
-        <input id="compareBSearch" class="input" placeholder="Search teams…">
-        <select id="compareB" class="input"></select>
-      </div>
+      <input id="compareB" class="input" list="compareBList" placeholder="Search team…">
+      <datalist id="compareBList"></datalist>
     </div>
+
     <div>
       <button id="compareBtn" class="btn primary">Compare</button>
       <button id="compareSwap" class="btn ghost" title="Swap teams">Swap</button>
@@ -421,17 +416,20 @@ td.tloss{ color: #d33; background: rgba(211,51,51,.07); }
   <div class="compare-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
     <!-- LEFT: radar & edges -->
 <div class="card" style="display:grid; grid-template-rows:auto auto; gap:10px;">
-  <div style="text-align:center">
-    <h3 style="margin:0 0 6px">Radar — Key Factors</h3>
-    <canvas id="radarCanvas" width="420" height="500" aria-label="Radar chart"
-            style="max-width:420px; width:100%; height:auto; display:block; margin-inline:auto;"></canvas>
-    <p class="tiny" style="margin-top:4px">Factors: Elo, Play, Prior, PPA(adj), Market, Returning, SoS</p>
-  </div>
-
-      <div>
+        <div>
         <h3 style="margin:0 0 6px">Key Edges</h3>
         <div id="compareEdges" class="edge-badges"></div>
       </div>
+        <div></div>
+
+  <div>
+    <h3 style="margin:0 0 6px">Radar — Key Factors</h3>
+    <canvas id="radarCanvas" width="420" height="500" aria-label="Radar chart"
+            style="max-width:420px; width:100%; height:auto; display:block; margin-inline:auto; text-align:center"></canvas>
+    <p class="tiny" style="margin-top:4px">Factors: Elo, Play, Prior, PPA(adj), Market, Returning, SoS</p>
+  </div>
+
+
     </div>
 
     <!-- RIGHT: head-to-head, then stats comparison -->

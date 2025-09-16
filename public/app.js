@@ -941,14 +941,9 @@ function renderTable(rows, meta) {
   });
 
   // populate compare selects
-if (compareA && compareB) {
+{
   const names = rows.map(r => r.team);
-  // initial full options
-  compareA.innerHTML = ''; compareB.innerHTML = '';
-  names.forEach(n => { compareA.append(new Option(n, n)); compareB.append(new Option(n, n)); });
-  // attach search filtering (uses the same names)
-  setupSelectSearch('compareA', 'compareASearch', names);
-  setupSelectSearch('compareB', 'compareBSearch', names);
+  setTeamLists(names);
 }
 }
 
@@ -1471,19 +1466,19 @@ updateDrawerNavButtons(0);
 let radarChart = null;
 
 onId('compareBtn', 'click', async () => {
-  const selA = document.getElementById('compareA');
-  const selB = document.getElementById('compareB');
-  const perGameChk = document.getElementById('comparePerGame');
-  if (!selA || !selB) return;
+  const nameA = resolveTeamInput('compareA');
+  const nameB = resolveTeamInput('compareB');
 
-  const nameA = selA.value;
-  const nameB = selB.value;
-  if (!nameA || !nameB) { alert('Pick two teams first.'); return; }
+  if (!_teamNames.includes(nameA) || !_teamNames.includes(nameB)) {
+    alert('Please pick valid teams from the list (type to search, then choose a suggestion).');
+    return;
+  }
 
   const a = findTeamRowByName(nameA);
   const b = findTeamRowByName(nameB);
   if (!a || !b) { alert('Could not find teams in current rankings. Re-run rankings and try again.'); return; }
 
+  const perGameChk = document.getElementById('comparePerGame');
   const perGameMode = !!(perGameChk && perGameChk.checked);
 
   // Stats + Key Edges
@@ -1496,6 +1491,7 @@ onId('compareBtn', 'click', async () => {
   // Head-to-Head + Common Opponents
   await renderH2HAndCommon(a, b);
 });
+
 
 // auto-recompare on change
 ['compareA','compareB','comparePerGame'].forEach(id => {
@@ -1515,6 +1511,64 @@ onId('compareBtn', 'click', async () => {
     if (btn && a && b && a.value && b.value) btn.click();
   });
 });
+
+
+let _teamNames = [];
+
+function setTeamLists(names) {
+  _teamNames = Array.isArray(names) ? names.slice() : [];
+  const aList = document.getElementById('compareAList');
+  const bList = document.getElementById('compareBList');
+  const opts = _teamNames.map(n => `<option value="${n}"></option>`).join('');
+  if (aList) aList.innerHTML = opts;
+  if (bList) bList.innerHTML = opts;
+}
+
+// Try to resolve what's typed to a valid team name.
+// - exact (case-insens) match wins
+// - if exactly one contains() match, use it
+function resolveTeamInput(inputId) {
+  const el = document.getElementById(inputId);
+  if (!el) return null;
+  const raw = (el.value || '').trim();
+  if (!raw) return null;
+  const lc = raw.toLowerCase();
+  const exact = _teamNames.find(n => n.toLowerCase() === lc);
+  if (exact) { el.value = exact; return exact; }
+  const matches = _teamNames.filter(n => n.toLowerCase().includes(lc));
+  if (matches.length === 1) { el.value = matches[0]; return matches[0]; }
+  return raw; // unresolved; caller will check validity
+}
+
+function findTeamRowByName(name) {
+  const list = (lastRankings && (lastRankings.rankings || lastRankings)) || [];
+  return list.find(r => r.team === name) || null;
+}
+
+['compareA','compareB'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+
+  // When user picks a suggestion from the datalist, 'change' fires.
+  el.addEventListener('change', () => {
+    const a = document.getElementById('compareA');
+    const b = document.getElementById('compareB');
+    const btn = document.getElementById('compareBtn');
+    if (a?.value && b?.value && btn) btn.click();
+  });
+
+  // If they just type and hit Enter:
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const btn = document.getElementById('compareBtn');
+      if (btn) btn.click();
+    }
+  });
+});
+
+// Keep your existing 'compareSwap' handler — it still works, since these are inputs now.
+
 
 // swap teams
 onId('compareSwap', 'click', () => {
