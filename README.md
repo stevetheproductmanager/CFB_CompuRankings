@@ -19,7 +19,7 @@ npm install
 npm run dev
 # open http://localhost:5057
 
-## .env format
+## .env format (put in project root folder)
 CFBD_API_KEY=API KEY
 PORT=5057
 SEASON_YEAR=2025
