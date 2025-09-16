@@ -1465,32 +1465,41 @@ updateDrawerNavButtons(0);
 // ---------- compare ----------
 let radarChart = null;
 
+// Existing compare handler — append the two lines marked NEW
 onId('compareBtn', 'click', async () => {
   const nameA = resolveTeamInput('compareA');
   const nameB = resolveTeamInput('compareB');
 
-  if (!_teamNames.includes(nameA) || !_teamNames.includes(nameB)) {
-    alert('Please pick valid teams from the list (type to search, then choose a suggestion).');
-    return;
-  }
+ // if (!_teamNames.includes(nameA) || !_teamNames.includes(nameB)) {
+   // alert('Please pick valid teams from the list (type to search, then choose a suggestion).');
+    // return;
+  // }
 
   const a = findTeamRowByName(nameA);
   const b = findTeamRowByName(nameB);
-  if (!a || !b) { alert('Could not find teams in current rankings. Re-run rankings and try again.'); return; }
+  if (!a || !b) { return; }
+//    if (!a || !b) { alert('Could not find teams in current rankings. Re-run rankings and try again.'); return; }
+
 
   const perGameChk = document.getElementById('comparePerGame');
   const perGameMode = !!(perGameChk && perGameChk.checked);
 
-  // Stats + Key Edges
   renderStatComparison(a, b, perGameMode);
-
-  // Radar
   const canvas = document.getElementById('radarCanvas');
   drawMiniRadar(canvas, a, b);
 
-  // Head-to-Head + Common Opponents
+  // NEW: keep refs & render prediction
+  lastCompare = { a, b };
+  renderPrediction(a, b);
+
   await renderH2HAndCommon(a, b);
 });
+
+// Recompute when the site (Neutral/Home) changes
+onId('predLoc', 'change', () => {
+  if (lastCompare.a && lastCompare.b) renderPrediction(lastCompare.a, lastCompare.b);
+});
+
 
 
 // auto-recompare on change
@@ -1511,6 +1520,100 @@ onId('compareBtn', 'click', async () => {
     if (btn && a && b && a.value && b.value) btn.click();
   });
 });
+
+
+// ---------- compare → prediction helpers ----------
+let lastCompare = { a: null, b: null };
+
+function safeNum(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+function gamesPlayed(r) {
+  return Math.max(1, safeNum(r.wins, 0) + safeNum(r.losses, 0));
+}
+function eloWinProb(dElo) {
+  // Standard Elo logistic curve
+  return 1 / (1 + Math.pow(10, -dElo / 400));
+}
+function eloDiffToMargin(dElo) {
+  // Tunable: how many Elo points ≈ 1 scoreboard point.
+  // 25 works well as a conservative default for CFB-like scoring.
+  const ELO_PER_POINT = 25;
+  return dElo / ELO_PER_POINT;
+}
+
+/**
+ * Predict outcome (win%, spread, total, scores) from team rows.
+ * site: 'neutral' | 'homeA' | 'homeB'
+ */
+function predictOutcome(a, b, site = 'neutral') {
+  const hfa = Number(weights?.hfa ?? 65);         // Elo points from your UI slider
+  let dElo = safeNum(a.elo, 0) - safeNum(b.elo, 0);
+  if (site === 'homeA') dElo += hfa;
+  else if (site === 'homeB') dElo -= hfa;
+
+  const pA = eloWinProb(dElo);
+  const pB = 1 - pA;
+  const margin = eloDiffToMargin(dElo);          // A minus B, in points
+
+  // Build a sane scoring baseline from PF/PA per game
+  const gA = gamesPlayed(a), gB = gamesPlayed(b);
+  const aPF = safeNum(a.pointsFor, 0) / gA;
+  const aPA = safeNum(a.pointsAgainst, 0) / gA;
+  const bPF = safeNum(b.pointsFor, 0) / gB;
+  const bPA = safeNum(b.pointsAgainst, 0) / gB;
+
+  // Expected points for each team = average(own offense, opponent defense)
+  let aBase = (aPF + bPA) / 2;
+  let bBase = (bPF + aPA) / 2;
+  if (!Number.isFinite(aBase) || aBase <= 0) aBase = 28;
+  if (!Number.isFinite(bBase) || bBase <= 0) bBase = 24;
+
+  // Shift baseline so the difference matches the Elo-implied margin
+  const baseDiff = aBase - bBase;
+  const delta = margin - baseDiff;
+  let aPts = Math.max(0, aBase + delta / 2);
+  let bPts = Math.max(0, bBase - delta / 2);
+
+  // Keep numbers in a realistic range
+  aPts = Math.min(70, aPts);
+  bPts = Math.min(70, bPts);
+
+  return {
+    pA, pB,
+    spreadA: margin,            // positive → favors A
+    total: aPts + bPts,
+    aPts, bPts
+  };
+}
+
+function renderPrediction(a, b) {
+  const out = document.getElementById('predOut');
+  const sel = document.getElementById('predLoc');
+  if (!out || !sel) return;
+
+  const site = sel.value || 'neutral';
+  const pred = predictOutcome(a, b, site);
+
+  const { pA, pB, spreadA, total, aPts, bPts } = pred;
+  const aName = a.team, bName = b.team;
+  const fav = spreadA >= 0 ? aName : bName;
+  const absSpread = Math.abs(spreadA);
+
+  out.innerHTML = `
+    <div class="row" style="gap:8px; flex-wrap:wrap">
+    <span class="badge">${fav} favored by ${absSpread.toFixed(1)}</span>  
+    <span class="badge">${site === 'neutral' ? 'Neutral' : (site === 'homeA' ? aName + ' home' : bName + ' home')}</span>
+    <span class="badge">Total ~ ${total.toFixed(1)}</span>
+    <span class="badge">${aName} win %: ${(pA*100).toFixed(1)}%</span>
+    <span class="badge">${bName} win %: ${(pB*100).toFixed(1)}%</span>
+    </div>
+    <div class="tiny" style="margin-top:6px">
+      Projected score: <strong>${aName} ${aPts.toFixed(1)}</strong> — <strong>${bName} ${bPts.toFixed(1)}</strong>
+    </div>
+  `;
+}
 
 
 let _teamNames = [];
