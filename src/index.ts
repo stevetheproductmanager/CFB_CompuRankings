@@ -837,4 +837,4 @@ app.get('/api/cache-data', (req, res) => {
 });
 
 
-app.listen(PORT, () => console.log(`Two-step server v1.7 http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`CFB Two-Step CompuRankings Server http://localhost:${PORT}`));
