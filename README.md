@@ -17,6 +17,5 @@ SEASON_YEAR=2025
 
 Credit to https://collegefootballdata.com/ for their great API access to college football data.
 
-Screenshots
-
-<img width="1907" height="916" alt="image" src="https://github.com/user-attachments/assets/342875e4-c1aa-49ad-9d2b-deac054ab036" />
+# Screenshots
+<img width="1907" height="916" alt="screen1" src="https://github.com/user-attachments/assets/9b0c1dc4-9ec7-49bc-b177-42379ec5d883" />
